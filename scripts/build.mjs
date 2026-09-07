@@ -24,10 +24,11 @@ for(const mode of ['month','module'])for(const theme of ['light','dark']){
 // the script element; the renderer separately escapes every SVG text value.
 const scriptJson=value=>JSON.stringify(value).replace(/</g,'\\u003c').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
 const layout=(await readFile('src/layout.mjs','utf8')).replace(/^export /gm,'');
+const suggestions=(await readFile('src/suggestions.mjs','utf8')).replace(/^export /gm,'');
 const data={...parsed,today,snapshotDate};
 const {subscriptionUrl,...previewConfig}=config;
 const template=await readFile('src/preview.html','utf8');
-const html=template.replace('/*__LAYOUT__*/',()=>layout).replace('/*__DATA__*/',()=>scriptJson(data)).replace('/*__CONFIG__*/',()=>scriptJson(previewConfig));
+const html=template.replace('/*__LAYOUT__*/',()=>layout+'\n'+suggestions).replace('/*__DATA__*/',()=>scriptJson(data)).replace('/*__CONFIG__*/',()=>scriptJson(previewConfig));
 await writeFile('output/preview.html',html);
 await writeFile('output/events.json',JSON.stringify(data,null,2));
 await writeFile('output/validation.json',JSON.stringify({generatedAt:new Date().toISOString(),totalEvents:parsed.events.length,courseEvents:selectEvents(parsed.events,config.course).length,reports},null,2));

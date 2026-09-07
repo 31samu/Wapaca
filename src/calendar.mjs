@@ -17,11 +17,16 @@ export function cleanDescription(value = '') {
 export function parseCalendar(source, timeZone = 'Europe/Stockholm') {
   const calendar = new ICAL.Component(ICAL.parse(source));
   if (calendar.name !== 'vcalendar') throw new Error('Expected an iCalendar VCALENDAR.');
+  const keys = new Set();
   const events = calendar.getAllSubcomponents('vevent').map(component => {
     const event = new ICAL.Event(component);
     if (event.isRecurring() || event.isRecurrenceException()) {
       throw new Error('Recurring events need expansion support before this feed can be previewed.');
     }
+    if (!event.uid || keys.has(event.uid)) throw new Error('Missing or duplicate event UID; resolve before rendering.');
+    keys.add(event.uid);
+    // Cancellation notices may contain only the UID and status, without dates.
+    if (String(component.getFirstPropertyValue('status')).toUpperCase() === 'CANCELLED') return null;
     if (!event.startDate || !event.endDate) throw new Error('An event is missing its dates.');
     const allDay = event.startDate.isDate;
     if (event.endDate.isDate !== allDay) throw new Error('Mixed date and time values in an event.');
@@ -53,12 +58,7 @@ export function parseCalendar(source, timeZone = 'Europe/Stockholm') {
         : /workshop|\bWS\b/i.test(summary) ? 'workshop' : 'session',
       cancelled: String(component.getFirstPropertyValue('status')).toUpperCase() === 'CANCELLED'
     };
-  }).filter(event => !event.cancelled);
-  const keys = new Set();
-  for (const event of events) {
-    if (!event.uid || keys.has(event.uid)) throw new Error('Missing or duplicate event UID; resolve before rendering.');
-    keys.add(event.uid);
-  }
+  }).filter(Boolean);
   events.sort((a, b) => a.start.localeCompare(b.start) || a.uid.localeCompare(b.uid));
   return { name: calendar.getFirstPropertyValue('x-wr-calname') || 'Calendar', timeZone, events };
 }

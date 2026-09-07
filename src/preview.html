@@ -17,6 +17,7 @@
   <main>
     <aside aria-label="Wallpaper settings">
       <div class="field"><label for="mode">View</label><select id="mode"><option value="module">Module</option><option value="month">Month</option></select></div>
+      <div class="field"><button id="suggest-modules" type="button">Suggest modules</button></div>
       <div class="field"><label for="theme">Appearance</label><select id="theme"><option value="light">Light</option><option value="dark">Dark</option></select></div>
       <div id="module-fields">
         <div class="field"><label for="module-name">Module name</label><input id="module-name" maxlength="120"></div>
@@ -29,6 +30,12 @@
       <div class="actions export-actions"><button class="primary" id="export-png" type="button">Export PNG</button><button id="export-heic" type="button">Export HEIC</button></div>
     </aside>
     <section class="work" aria-label="Wallpaper preview">
+      <section id="module-suggestions" hidden aria-label="Module suggestions">
+        <h2 style="font-size:17px">Suggested modules</h2>
+        <p class="note">Based on course events across the calendar, excluding unchecked events. These are estimates. Adjust the name and dates, then choose Use module. Automatic wallpaper updates also apply accepted changes.</p>
+        <div id="suggestion-list" class="event-list"></div>
+        <button id="close-suggestions" type="button" style="margin:16px 0">Close suggestions</button>
+      </section>
       <div class="preview-bar"><span id="snapshot"></span><span id="dimensions"></span></div>
       <div id="error" role="alert"></div>
       <div class="preview-shell"><div id="wallpaper"></div></div>
@@ -56,6 +63,32 @@
     const sizes=[`${state.width}x${state.height}`,'3024x1964','3456x2234','2560x1440','3840x2160','1920x1080'];
     [...new Set(sizes)].forEach(size=>{const option=document.createElement('option');option.value=size;option.textContent=size.replace('x',' × ');$('resolution').append(option);});
     function node(tag,cls,value){const element=document.createElement(tag);element.className=cls;element.textContent=value;return element;}
+    $('close-suggestions').addEventListener('click',()=>{$('module-suggestions').hidden=true;});
+    $('suggest-modules').addEventListener('click',()=>{
+      const panel=$('module-suggestions'), list=$('suggestion-list');list.replaceChildren();panel.hidden=false;
+      const suggestions=suggestModules(data.events,state.course||config.course,state.excludedEventIds);
+      if(!suggestions.length)list.append(node('p','note','Not enough matching sessions to suggest a module. You can still enter a name and dates manually.'));
+      suggestions.forEach((suggestion,index)=>{
+        const card=node('article','event','');card.append(node('h3','',suggestion.name),node('p','',`${suggestion.confidence} · ${suggestion.count} sessions`));
+        suggestion.reasons.forEach(reason=>card.append(node('p','',reason)));
+        const fields={};
+        for(const [key,label,type] of [['name','Module name','text'],['start','First day','date'],['end','Last day','date']]){
+          const wrapper=node('div','field',''), input=document.createElement('input'), caption=node('label','',label);
+          input.id=`suggestion-${index}-${key}`;caption.htmlFor=input.id;input.type=type;input.value=suggestion[key];
+          if(key==='name')input.maxLength=120;
+          fields[key]=input;wrapper.append(caption,input);card.append(wrapper);
+        }
+        const use=node('button','primary','Use module'), error=node('p','conflict','');use.type='button';error.setAttribute('role','alert');
+        use.addEventListener('click',()=>{
+          const next={...state,mode:'module',name:fields.name.value.trim(),start:fields.start.value,end:fields.end.value,proposed:false};
+          try{if(!next.name)throw new Error('Enter a module name.');renderWallpaper(data.events,next);}
+          catch(problem){error.textContent=problem.message;return;}
+          Object.assign(state,next);for(const [id,key] of binds)$(id).value=state[key];panel.hidden=true;render();
+        });
+        card.append(use,error);list.append(card);
+      });
+      panel.scrollIntoView?.({block:'start',behavior:'smooth'});
+    });
     function render(){
       $('module-fields').hidden=state.mode!=='module';$('month-field').hidden=state.mode!=='month';
       try {

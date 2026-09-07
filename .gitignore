@@ -11,6 +11,3 @@ output/
 # Local editor and operating-system files
 .DS_Store
 .vscode/
-
-# cause I don't that
-PLAN.md

@@ -36,11 +36,13 @@ if (window.webkit?.messageHandlers?.timetable) {
   };
   window.nativeFeed=function(ics,fetchedAt){
     const parsed=parseCalendar(ics,state.timeZone);
+    const today=localParts(new Date(),state.timeZone).date;
+    const next={...state,today,snapshotDate:localParts(fetchedAt,state.timeZone).date};
+    if(state.mode==='month'&&state.month===state.today.slice(0,7))next.month=today.slice(0,7);
     // Validate the selected layout before replacing the working calendar.
-    renderWallpaper(parsed.events,state);
+    renderWallpaper(parsed.events,next);
     Object.assign(data,parsed);
-    state.snapshotDate=localParts(fetchedAt,state.timeZone).date;
-    state.today=localParts(new Date(),state.timeZone).date;
+    Object.assign(state,next);$('month').value=state.month;
     $('snapshot').textContent='Calendar snapshot · '+state.snapshotDate;
     render();return true;
   };

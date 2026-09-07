@@ -46,6 +46,19 @@ test('module aligns to five weeks, month can occupy six, and invalid ranges fail
 test('unsupported recurrence is reported instead of omitted',()=>{
   assert.throws(()=>parseCalendar(ics('DTSTART:20260908T080000Z\r\nDTEND:20260908T100000Z\r\nRRULE:FREQ=WEEKLY\r\nSUMMARY:Lecture')),/Recurring/);
 });
+test('cancellation notices without dates are omitted; ambiguous UIDs and recurrence exceptions reject the feed',()=>{
+  assert.deepEqual(parseCalendar(ics('STATUS:CANCELLED')).events,[]);
+  const event='BEGIN:VEVENT\r\nUID:same\r\nDTSTART:20260908T080000Z\r\nDTEND:20260908T100000Z\r\nEND:VEVENT\r\n';
+  assert.throws(()=>parseCalendar(`BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${event}${event}END:VCALENDAR`),/duplicate/);
+  assert.throws(()=>parseCalendar(ics('RECURRENCE-ID:20260908T080000Z\r\nSTATUS:CANCELLED')),/Recurring/);
+  assert.throws(()=>parseCalendar(ics('DTSTART:20260908T080000Z\r\nDTEND:20260908T100000Z').replace('UID:test@example.com\r\n','')),/UID/);
+});
+test('spring and autumn transitions keep UTC instants on the correct local date and time',()=>{
+  assert.deepEqual(localParts('2026-03-29T00:30:00Z','Europe/Stockholm'),{date:'2026-03-29',time:'01:30'});
+  assert.deepEqual(localParts('2026-03-29T01:30:00Z','Europe/Stockholm'),{date:'2026-03-29',time:'03:30'});
+  assert.deepEqual(localParts('2026-10-25T00:30:00Z','Europe/Stockholm'),{date:'2026-10-25',time:'02:30'});
+  assert.deepEqual(localParts('2026-10-25T01:30:00Z','Europe/Stockholm'),{date:'2026-10-25',time:'02:30'});
+});
 test('dense dates disclose overflow and source text cannot become SVG markup',()=>{
   const {events:[event]}=parseCalendar(ics('DTSTART:20261005T080000Z\r\nDTEND:20261005T100000Z\r\nSUMMARY:<script>alert(1)</script>'));
   const events=Array.from({length:25},(_,i)=>({...event,uid:String(i)}));

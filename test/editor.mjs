@@ -57,3 +57,55 @@ test('long event titles wrap inside their cards',async()=>{
  assert.equal(dom.window.getComputedStyle(title).overflowWrap,'anywhere');
  dom.window.close();
 });
+
+const calendar=(...events)=>`BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${events.join('')}END:VCALENDAR\r\n`;
+test('suggestions require an explicit choice and accept edited dates without changing exclusions',async()=>{
+ const {dom,messages}=await setup();const d=dom.window.document;
+ const before=messages.filter(m=>m.type==='settings').at(-1).editor;
+ d.getElementById('suggest-modules').click();
+ assert.equal(d.querySelectorAll('#suggestion-list article').length,2);
+ assert.equal(d.getElementById('module-name').value,before.name);
+ d.getElementById('suggestion-0-name').value='My Worldbuilding module';
+ d.getElementById('suggestion-0-start').value='2026-08-31';
+ d.querySelector('#suggestion-list button').click();
+ const after=messages.filter(m=>m.type==='settings').at(-1).editor;
+ assert.equal(after.name,'My Worldbuilding module');assert.equal(after.start,'2026-08-31');assert.equal(after.end,'2026-09-30');
+ assert.deepEqual(after.excludedEventIds,before.excludedEventIds);
+ assert.equal(d.getElementById('module-suggestions').hidden,true);
+ dom.window.close();
+});
+const session=(uid,title,date='20260908')=>`BEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART:${date}T080000Z\r\nDTEND:${date}T100000Z\r\nSUMMARY:${title}\r\nEND:VEVENT\r\n`;
+test('cached startup and refresh retain exclusions through moves, deletions and cancellations',async()=>{
+ const {dom,seed,messages}=await setup();
+ dom.window.nativeLoad({...seed,ics:calendar(session('kept','Original'),session('deleted','Deleted later')),editor:{mode:'module',start:'2026-09-01',end:'2026-09-30',course:'',excludedEventIds:['kept']}});
+ assert.match(dom.window.document.getElementById('detail-count').textContent,/1 included · 1 excluded/);
+ dom.window.nativeFeed(calendar(session('kept','Moved','20260909'),session('new','New session'),'BEGIN:VEVENT\r\nUID:cancelled\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\n'),'2026-09-08T12:00:00Z');
+ const html=dom.window.document.getElementById('wallpaper').innerHTML;
+ assert.match(html,/New session/);assert.doesNotMatch(html,/Moved|Deleted later/);
+ assert.equal(dom.window.document.querySelector('[data-event-id="kept"]').checked,false);
+ const before=messages.filter(m=>m.type==='settings').at(-1).editor.snapshotDate;
+ assert.throws(()=>dom.window.nativeFeed(calendar(session('duplicate','One'),session('duplicate','Two')),'2026-09-09T12:00:00Z'),/duplicate/);
+ assert.equal(dom.window.document.getElementById('wallpaper').innerHTML,html);
+ assert.equal(messages.filter(m=>m.type==='settings').at(-1).editor.snapshotDate,before);
+ dom.window.nativeFeed(calendar(),'2026-09-09T12:00:00Z');
+ assert.match(dom.window.document.getElementById('detail-count').textContent,/0 included/);
+ assert.ok(messages.filter(m=>m.type==='settings').at(-1).editor.excludedEventIds.includes('kept'));
+ dom.window.close();
+});
+
+test('wake and refresh advance a following month across year end, preserving historical month choices',async()=>{
+ for(const action of ['day','feed'])for(const following of [true,false]){
+  const {dom,seed,messages}=await setup();
+  const RealDate=dom.window.Date;let now='2026-12-31T22:30:00Z';
+  dom.window.Date=class extends RealDate { constructor(...args){super(...(args.length?args:[now]));} static now(){return new RealDate(now).getTime();} };
+  dom.window.nativeLoad({...seed,ics:calendar(),editor:{mode:'month',month:following?'2026-12':'2026-09',today:'2026-12-31',course:''}});
+  now='2026-12-31T23:30:00Z';
+  if(action==='day')assert.equal(dom.window.nativeDay(),true);
+  else dom.window.nativeFeed(calendar(),now);
+  const state=messages.filter(m=>m.type==='settings').at(-1).editor;
+  assert.equal(state.today,'2027-01-01');
+  assert.equal(state.month,following?'2027-01':'2026-09');
+  assert.equal(dom.window.nativeDay(),false);
+  dom.window.close();
+ }
+});

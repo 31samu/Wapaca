@@ -102,10 +102,15 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
     }
     @objc func updateScreens() {
         let previous = saved["screen"] as? String
+        let wasConnected = screenPicker.itemArray.contains { ($0.representedObject as? String) == previous }
         screenPicker.removeAllItems()
         for screen in NSScreen.screens { screenPicker.addItem(withTitle:screen.localizedName); screenPicker.lastItem?.representedObject = screenID(screen) }
         if let index = NSScreen.screens.firstIndex(where:{screenID($0) == previous}) { screenPicker.selectItem(at:index) }
         else if previous != nil { screenPicker.select(nil) }
+        if ready, previous != nil, !wasConnected, screenPicker.selectedItem != nil {
+            saved.removeValue(forKey:"lastHash"); persist()
+            if automatic.state == .on { applyNow() }
+        }
     }
     @objc func changeScreen() { saved["screen"] = screenPicker.selectedItem?.representedObject as? String; saved.removeValue(forKey:"lastHash"); persist() }
     @objc func changeRefreshInterval() {
