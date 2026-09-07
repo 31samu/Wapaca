@@ -1,0 +1,14 @@
+import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
+import {parseCalendar} from '../src/calendar.mjs';
+await mkdir('data',{recursive:true});
+const config=JSON.parse(await readFile('config.local.json','utf8').catch(()=>readFile('config.example.json','utf8')));
+const url=process.env.CALENDAR_URL||config.subscriptionUrl;
+if(!url)throw new Error('Set CALENDAR_URL or subscriptionUrl in config.local.json.');
+const response=await fetch(url,{signal:AbortSignal.timeout(30000)});
+if(!response.ok)throw new Error(`Calendar download failed: HTTP ${response.status}. Existing snapshot retained.`);
+const source=await response.text();
+const parsed=parseCalendar(source,config.timeZone);
+await writeFile('data/calendar.ics.tmp',source);
+await rename('data/calendar.ics.tmp','data/calendar.ics');
+await writeFile('data/source.json',JSON.stringify({fetchedAt:new Date().toISOString(),cacheControl:response.headers.get('cache-control'),eventCount:parsed.events.length},null,2));
+console.log(`Saved ${parsed.events.length} events to the local snapshot. Run npm run build to render.`);
