@@ -57,6 +57,19 @@ test('long event titles wrap inside their cards',async()=>{
  dom.window.close();
 });
 
+test('Escape closes suggestions and event details',async()=>{
+ const {dom}=await setup();const d=dom.window.document;
+ d.getElementById('suggest-modules').click();
+ assert.equal(d.getElementById('module-suggestions').hidden,false);
+ d.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+ assert.equal(d.getElementById('module-suggestions').hidden,true);
+ assert.equal(d.activeElement.id,'suggest-modules');
+ const details=d.querySelector('details');details.open=true;
+ d.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+ assert.equal(details.open,false);
+ dom.window.close();
+});
+
 const calendar=(...events)=>`BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${events.join('')}END:VCALENDAR\r\n`;
 test('suggestions require an explicit choice and accept edited dates without changing exclusions',async()=>{
  const {dom,messages}=await setup();const d=dom.window.document;

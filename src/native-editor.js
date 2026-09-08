@@ -10,6 +10,21 @@ if (window.webkit?.messageHandlers?.wapacal) {
   const browserHeic=$('export-heic');
   const nativeHeic=browserHeic.cloneNode(true);
   browserHeic.replaceWith(nativeHeic);
+  document.addEventListener('keydown',event=>{
+    if(event.key!=='Escape')return;
+    const suggestions=$('module-suggestions');
+    if(suggestions&&!suggestions.hidden){
+      suggestions.hidden=true;
+      $('suggest-modules')?.focus();
+      event.preventDefault();
+      return;
+    }
+    const details=document.querySelector('details[open]');
+    if(details){
+      details.open=false;
+      event.preventDefault();
+    }
+  });
   nativeHeic.addEventListener('click',async()=>{
     nativeHeic.disabled=true;nativeHeic.textContent='Preparing HEIC…';
     try{send('exportHeic',{pair:await window.nativePair()});}

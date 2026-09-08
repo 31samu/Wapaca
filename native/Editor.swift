@@ -52,8 +52,35 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
             for key in ["subscriptionUrl", "ics", "etag", "modified"] { saved.removeValue(forKey:key) }
         }
         NSApp.setActivationPolicy(.regular)
-        let menu = NSMenu(); let appItem = NSMenuItem(); menu.addItem(appItem)
-        let sub = NSMenu(); sub.addItem(withTitle: "Quit Wapacal", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = sub; NSApp.mainMenu = menu
+        let menu = NSMenu()
+        let appItem = NSMenuItem(); menu.addItem(appItem)
+        let appMenu = NSMenu(title: "Wapacal")
+        let quit = NSMenuItem(title: "Quit Wapacal", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp
+        appMenu.addItem(quit)
+        appItem.submenu = appMenu
+
+        let editItem = NSMenuItem(); editItem.title = "Edit"
+        let editMenu = NSMenu(title: "Edit")
+        for (title, selector, key) in [("Undo", "undo:", "z"), ("Redo", "redo:", "Z"), ("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
+            let entry = NSMenuItem(title: title, action: Selector(selector), keyEquivalent: key)
+            if title == "Redo" { entry.keyEquivalentModifierMask = [.command, .shift] }
+            editMenu.addItem(entry)
+        }
+        editItem.submenu = editMenu; menu.addItem(editItem)
+
+        let calendarItem = NSMenuItem(); calendarItem.title = "Calendar"
+        let calendarMenu = NSMenu(title: "Calendar")
+        let refresh = NSMenuItem(title: "Refresh calendars", action: #selector(refreshNow), keyEquivalent: "r")
+        refresh.target = self; calendarMenu.addItem(refresh)
+        calendarItem.submenu = calendarMenu; menu.addItem(calendarItem)
+
+        let windowItem = NSMenuItem(); windowItem.title = "Window"
+        let windowMenu = NSMenu(title: "Window")
+        let close = NSMenuItem(title: "Close Window", action: #selector(closeWindow), keyEquivalent: "w")
+        close.target = self; windowMenu.addItem(close)
+        windowItem.submenu = windowMenu; menu.addItem(windowItem)
+        NSApp.mainMenu = menu
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName:"calendar",accessibilityDescription:"Wapacal")
         let tray = NSMenu()
@@ -126,6 +153,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps:true)
     }
+    @objc func closeWindow() { window.performClose(nil) }
     func windowWillClose(_ notification: Notification) { NSApp.setActivationPolicy(.accessory) }
     func persist() {
         do { try ensureWorkspaceDirectories(); try JSONSerialization.data(withJSONObject:saved,options:[.sortedKeys]).write(to:stateURL,options:.atomic) }
