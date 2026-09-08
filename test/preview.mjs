@@ -20,6 +20,11 @@ test('sanitized fixture fits the initial module in both appearances',async()=>{
       assert.ok(bound.y<=result.logicalHeight,`Vertical text overflow: ${bound.text}`);
     }
   }
+  const wallpaper=renderWallpaper(data.events,{...config,...config.module,mode:'module',theme:'light'});
+  assert.match(wallpaper.svg,/x="76" y="92"[^>]*>Prototype module<\/text>/);
+  const noTitle=renderWallpaper(data.events,{...config,...config.module,mode:'module',theme:'light',showTitle:false});
+  assert.doesNotMatch(noTitle.svg,/>Prototype module<\/text>/);
+  assert.match(noTitle.svg,/d="M76 92H/);
   const metadata=await sharp(Buffer.from(renderWallpaper(data.events,{...config,...config.module,mode:'module',theme:'light'}).svg)).metadata();
   assert.equal(metadata.width,3024);assert.equal(metadata.height,1964);
 });

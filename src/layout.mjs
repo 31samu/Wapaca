@@ -91,11 +91,12 @@ export function renderWallpaper(events, options) {
   if(!Number.isInteger(width)||!Number.isInteger(height)||width<1280||height<720||width>7680||height>4320) throw new Error('Use an image between 1280 × 720 and 7680 × 4320 pixels.');
   const grid=buildGrid(events,options); const p=palettes[options.theme]||palettes.light;
   const W=1512,H=height/width*W;
+  const menuBarInset=24;
   const x=76,right=options.iconSpace===false?76:158,gutter=44,cw=(W-x-right-gutter)/grid.columns;
   const title = options.mode==='month' ? new Intl.DateTimeFormat('en-GB',{month:'long',year:'numeric',timeZone:'UTC'}).format(new Date(grid.range.start)) : (options.name||'Untitled module');
   const showTitle=options.showTitle!==false;
   const titleLines=showTitle?wrapText(title,W-x-right-190,40,2):{lines:[],truncated:false};
-  const tableY=showTitle?108+(titleLines.lines.length-1)*39:68,bottom=H-44,available=bottom-tableY;
+  const tableY=(showTitle?108+(titleLines.lines.length-1)*39:68)+menuBarInset,bottom=H-44,available=bottom-tableY;
   if(available<290)throw new Error('This aspect ratio leaves too little space for the calendar.');
   const titleSize=14; const lineHeight=17;
   const timeLabel=(event,day)=>event.allDay?'ALL DAY':event.start===event.end?event.startTime:`${day===event.date?event.startTime:'↳'} – ${day===event.endDate?event.endTime:'continues'}`;
@@ -120,8 +121,8 @@ export function renderWallpaper(events, options) {
   function line(x1,y1,x2,y2){chunks.push(`<path d="M${x1} ${y1}H${x2}" stroke="${p.line}" stroke-width="0.8"/>`);}
   rect(0,0,W,H,p.bg);
   if(titleLines.truncated)warnings.push('The heading was shortened to fit.');
-  titleLines.lines.forEach((t,i)=>text(x,68+i*39,t,40,p.text,500));
-  text(W-right,showTitle?68:32,options.timeZone||'Europe/Stockholm',11,p.muted,400,'end');
+  titleLines.lines.forEach((t,i)=>text(x,68+menuBarInset+i*39,t,40,p.text,500));
+  text(W-right,(showTitle?68:32)+menuBarInset,options.timeZone||'Europe/Stockholm',11,p.muted,400,'end');
   const weekdays=['MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY','SUNDAY'];
   text(x,tableY-17,'WK',10,p.muted);
   for(let d=0;d<grid.columns;d++)text(x+gutter+d*cw+12,tableY-17,weekdays[d],10,p.muted,500);
