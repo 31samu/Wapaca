@@ -69,7 +69,7 @@ test('September all-events export fits every fixture event without overlaps in b
 
 test('event exclusions remain reversible, persist on reload and affect exports',async()=>{
   const {preview:html}=await loadFixtureApp();
-  const create=saved=>new JSDOM(html,{url:'https://timetable.example/preview',runScripts:'dangerously',beforeParse(window){
+  const create=saved=>new JSDOM(html,{url:'https://wapacal.example/preview',runScripts:'dangerously',beforeParse(window){
     if(saved)for(const [key,value] of saved)window.localStorage.setItem(key,value);
   }});
   const dom=create();const {document,Event}=dom.window;
@@ -106,7 +106,7 @@ test('Mac export freezes both appearances and event exclusions while rendering',
   input.checked=true;input.dispatchEvent(new Event('change'));
   const {blob,extension}=await downloaded;
   const payload=JSON.parse(await new Promise(resolve=>{const reader=new dom.window.FileReader();reader.onload=()=>resolve(reader.result);reader.readAsText(blob);}));
-  assert.equal(extension,'timetable');assert.equal(payload.version,1);
+  assert.equal(extension,'wapacal');assert.equal(payload.version,1);
   assert.equal(Buffer.from(payload.light,'base64').toString(),'test PNG bytes');
   assert.equal(payload.light,payload.dark);assert.equal(frames.length,2);
   assert.match(frames[0],/#f0efe9/);assert.match(frames[1],/#18231f/);

@@ -1,6 +1,6 @@
 BEGIN:VCALENDAR
 VERSION:2.0
-PRODID:-//Timetable Wallpaper//Test Fixture//EN
+PRODID:-//Wapacal//Test Fixture//EN
 X-WR-CALNAME:Example timetable
 BEGIN:VEVENT
 UID:foundations-intro@example.test

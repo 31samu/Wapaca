@@ -98,7 +98,7 @@ export function renderWallpaper(events, options) {
   const tableY=showTitle?108+(titleLines.lines.length-1)*39:68,bottom=H-44,available=bottom-tableY;
   if(available<290)throw new Error('This aspect ratio leaves too little space for the calendar.');
   const titleSize=14; const lineHeight=17;
-  const timeLabel=(event,day)=>event.allDay?'ALL DAY':`${day===event.date?event.startTime:'↳'} – ${day===event.endDate?event.endTime:'continues'}`;
+  const timeLabel=(event,day)=>event.allDay?'ALL DAY':event.start===event.end?event.startTime:`${day===event.date?event.startTime:'↳'} – ${day===event.endDate?event.endTime:'continues'}`;
   const cardInfo=(event,day,maxLines=20)=>{
     const wrapped=wrapText(event.title,cw-28,titleSize,maxLines);
     const roomText=options.rooms!==false&&event.room?event.room+(event.roomConflict?' *':''):'';

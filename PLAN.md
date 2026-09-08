@@ -1,36 +1,35 @@
-# Desktop background timetable
+# Wapacal
 
-Research and proposed implementation, 6 September 2026. Target macOS, inferred from the current workspace. This is a plan, not an installed app.
+Research started on 6 September 2026. Target: a local macOS calendar-to-wallpaper app.
 
-Step 1 is complete. The repository now contains an ICAL.js parser, shared SVG layout renderer, local interactive preview, and four PNG/SVG exports at the detected display resolution of 3024 × 1964. September and the proposed October module each show all 12 course events without truncation. Calendar tests and preview interaction checks pass. The initial renderer uses plain JavaScript and SVG plus Sharp, so this step does not depend on WebKit snapshots. Native application integration and HEIC packaging remain unimplemented.
+The working prototype now includes the calendar parser, shared SVG renderer, browser preview, native AppKit editor, menu bar controls, scheduled calendar refresh, paired HEIC generation, wallpaper apply/restore, editable module suggestions, and launch-at-login support. Node and Sharp remain development tools; the built app runs with bundled JavaScript in WKWebView and native macOS frameworks.
+
+The repository has also completed its first privacy and storage cleanup. Automated integration tests use fictional fixtures instead of the developer's calendar. Mutable app data lives in Application Support, older beside-the-app data migrates on first launch, generated history is bounded, and the app has a confirmed reset action. Public release packaging is deliberately deferred while the product is still changing.
 
 ## Recommendation
 
-Build a small menu bar app that fetches an ICS subscription, organizes events into a selected month or named module, renders light and dark PNGs, and sets the appropriate image as the desktop wallpaper. Keep settings, calendar data, and image generation on the Mac.
+Continue with the existing small menu bar app. It fetches an ICS subscription, organizes events into a selected month or named module, renders light and dark images, and installs an appearance-aware wallpaper. Keep settings, calendar data, and image generation on the Mac.
 
-Start with manually named modules and start/end dates. The user prefers suggested date ranges eventually, with manual setup to keep the first version simple. Add suggestions after the basic workflow works. Suggestions must remain editable and must not silently change a saved module.
+Keep manually named modules and start/end dates as the source of truth. Suggested ranges are now available, but remain editable and never replace saved settings without an explicit choice.
 
-For a quick personal experiment, a custom calendar page displayed through Plash is the shortest alternative. For the intended app, use actual wallpaper images: the calendar stays visible after the app quits, and rendering only happens when needed. Package light/dark variants in an appearance-aware HEIC so macOS can switch them. The app still needs to run periodically to refresh calendar content and the current-day marker.
+The chosen implementation uses actual wallpaper images rather than a persistent desktop overlay. The calendar stays visible after the app quits, and rendering only happens when needed. Light and dark variants are packaged in an appearance-aware HEIC so macOS can switch them. The app runs periodically only when automatic refresh and wallpaper updates are wanted.
 
-## What the supplied feed actually contains
+Do not add an Xcode project, release signing, notarization, installer creation, or a large directory reorganization yet. Those tasks become worthwhile when the app is stable enough for an outside beta. Before sharing any build, add a release path that cannot embed the developer's private calendar or subscription URL.
 
-The supplied URL was downloaded successfully on 6 September 2026. These observations describe that snapshot, not a guarantee about future responses.
+## Feed behavior established during prototyping
 
-- Calendar name: `TimeEdit-1DI300-20260801`.
-- 56 events in total: 32 timed events and 24 date-only events.
-- 24 events mention `1DI300`, between 8 September and 4 November 2026. September contains 12, October 11, November 1.
-- The remaining events include university activities and holidays. The latest event begins on 26 June 2027.
-- The declared date limit runs from 17 August 2026 to 7 September 2031. That does not mean teaching events are published throughout that period.
+The first local TimeEdit snapshot established the following behavior. The snapshot and subscription remain private and are not test fixtures or tracked project data.
+
+- A feed can mix timed teaching events, date-only activities, holidays, and events outside the chosen course or visible date range.
+- A declared subscription date limit does not guarantee that teaching events are published throughout the period.
 - There are no explicit module fields, categories, or module names in the inspected properties. Course code alone cannot distinguish modules.
-- Timed events use UTC. Convert to `Europe/Stockholm`, including the autumn daylight-saving transition. Preserve date-only values as calendar dates.
+- Timed events may use UTC. Convert them to the configured time zone, including daylight-saving transitions. Preserve date-only values as calendar dates.
 - Useful session titles frequently appear in `DESCRIPTION`. `SUMMARY` often contains only the type and course code. Strip standalone trailing TimeEdit IDs from display text; keep the original fields internally.
-- Some locations conflict with rooms named in descriptions. For example, the 8 September introduction has `M1104V Food lab` as its location and mentions `M1099B` in its description. Keep both available in the preview rather than silently choosing a room from prose.
+- Locations can conflict with rooms named in descriptions. Keep both available in the preview rather than silently choosing a room from prose.
 - The feed contains folded lines and escaped punctuation. Use an ICS library in the app. The inspection script was only for examining this sample.
 - Every event in this response shares its export-time `DTSTAMP` and `LAST-MODIFIED` value. Verify those fields across later responses before treating them as evidence that an event changed. Compare normalized event content to decide whether to regenerate images.
 - `X-PUBLISHED-TTL` says 20 minutes, while the HTTP response advertises a cache lifetime of 4,200 seconds, or 70 minutes. Respect HTTP caching; do not promise immediate schedule updates. This response supplied neither an ETag nor an HTTP Last-Modified header.
 - The server returned `Access-Control-Allow-Origin: *`, making a direct browser fetch plausible for this particular feed. Validate the actual browser request before choosing the Plash shortcut. A native fetch avoids depending on this behavior for other providers.
-
-One plausible module starts with "Introduction Intersectionality & Norms" on 5 October and ends with "Final presentations" on 4 November. A Monday-aligned five-week display would cover 5 October through 8 November, weeks 41 to 45. This is an inference from session titles, not a confirmed module boundary.
 
 ## Existing tools and projects
 
@@ -65,7 +64,7 @@ Start with a reviewable course-code filter, not an irreversible rule that every 
 
 ## Proposed implementation
 
-Use SwiftUI for the menu bar/settings app and AppKit for desktop integration. Fetch through URLSession. Bundle a TypeScript calendar/layout component and [ical.js](https://github.com/kewisch/ical.js) inside a WKWebView, sharing that component between preview and image rendering. This allows the table styling to be developed in VS Code and previewed in Firefox. The installed app would use WebKit and would not need Firefox, Node, a local web server, or hosted services running.
+Use the current AppKit application for the window, menu bar, display controls, and desktop integration. Fetch through URLSession. Bundle the JavaScript calendar/layout code and [ical.js](https://github.com/kewisch/ical.js) inside WKWebView, sharing the renderer between browser development, exports, and the native editor. This keeps styling work in VS Code and previewable in Firefox. The installed app uses WebKit and does not need Firefox, Node, a local server, or a hosted service.
 
 ICAL.js supplies parsing and recurrence tools. Its documentation notes that timezone definitions are not bundled by default. For this UTC feed, format instants in Europe/Stockholm using platform timezone support. For broader feed support, register provided VTIMEZONE definitions and handle unknown TZIDs explicitly. Test recurring events and exceptions before advertising compatibility with arbitrary subscriptions.
 
@@ -73,7 +72,7 @@ The processing path is:
 
 `Subscription → fetch/cache → parse and normalize → filter/module range → table layout → light/dark PNGs → macOS wallpaper`
 
-Use [WKWebView snapshots](https://developer.apple.com/documentation/webkit/wkwebview/takesnapshot(with:completionhandler:)) to capture the completed table. Verify offscreen capture, font readiness, and Retina resolution in an early technical prototype. If that proves unreliable, use native Core Graphics/AppKit rendering for the same layout model before building the rest of the app around snapshotting.
+The renderer produces SVG directly. Browser canvas or Sharp creates PNG exports, while the embedded editor passes paired PNG data to Swift for HEIC encoding. This avoids depending on WKWebView snapshot behavior and keeps the browser and native layouts on the same rendering path.
 
 Apply images with [NSWorkspace.setDesktopImageURL](https://developer.apple.com/documentation/appkit/nsworkspace/setdesktopimageurl(_:for:options:)). This API targets a screen. Its existence does not establish reliable behavior across every inactive macOS Space. Test Spaces, external displays, display reconnection, and wallpaper cropping on the target macOS release; document the supported behavior.
 
@@ -83,19 +82,21 @@ Offer launch at login through [SMAppService](https://developer.apple.com/documen
 
 Keep the last successful feed and rendered images if fetching/parsing fails. Show the last successful check and error in the menu bar app. A failed request must not replace the wallpaper with a blank calendar. On a valid full response, reconcile deleted and changed events; do not only append new records. When a feed's coverage changes, distinguish events outside coverage from confirmed deletions where possible.
 
-Store subscription links in private local settings, avoid logging their full value, and render event text as text rather than executable HTML. Keep the calendar read-only. Provide Pause, Refresh, Preview, Export PNG, and Restore previous wallpaper actions. Restoration should preserve original per-screen options where supported and should not claim to reproduce every dynamic wallpaper or Space configuration.
+Store subscription links and cached calendars under the app's Application Support directory, avoid logging the full URL, and render event text as text rather than executable HTML. Keep the calendar read-only. Provide Pause, Refresh, Preview, Export PNG, Reset data, and Restore previous wallpaper actions. Reset must retain active wallpaper files and current recovery records. Restoration should preserve original per-screen options where supported and should not claim to reproduce every dynamic wallpaper or Space configuration.
 
 ## Build sequence and completion checks
 
-1. **Data and layout proof.** Parse a local snapshot using the selected library, confirm the 24 course events, verify display titles and local times, and render a month plus the proposed five-week view in both appearances. Check the real screen size and dense dates. No wallpaper changes are needed for this step.
-2. **Wallpaper feasibility.** Package the two rendered appearances in HEIC, verify embedded frames and metadata, and test macOS automatic switching. Prove applying an updated image and restoring the previous wallpaper in a minimal Mac app. Test display and Space behavior before treating the wallpaper integration as solved.
-3. **Usable first version.** Add saved URLs, manual module name/date inputs, reviewable event filters, a preview, one selected display, PNG export, background refresh, caching, error recovery, and launch at login. Finish with end-to-end checks using the supplied subscription.
-4. **Reliability and expansion.** Test moved/deleted/cancelled events, duplicate UIDs and recurrence exceptions, all-day exclusive end dates, daylight-saving transitions, offline startup, sleep/wake, and reconnecting monitors. Add multiple feeds and display-specific layouts when required.
-5. **Suggested modules.** Look for introductions, examinations, topic changes, and schedule gaps. Present a proposed name and range with the supporting events. Require a user choice before saving a suggestion; keep manual editing available. Begin with deterministic rules. This feed is small enough that a language-model service is unnecessary.
+1. **Data and layout proof, complete.** Parse and normalize ICS data, verify local times, and render month and module views in both appearances. Cover dense dates, escaping, boundary weeks, overflow, and event exclusions.
+2. **Wallpaper feasibility, complete for the tested setup.** Package two appearances in HEIC, verify frames and metadata, apply an updated image, and restore the previous wallpaper. Inactive Spaces and external-display lifecycle behavior still need live testing.
+3. **Usable local version, complete.** Save the subscription and editor settings, refresh in the background, preserve the last working data after failures, export PNG/HEIC, update the selected display, and support launch at login.
+4. **Module suggestions, complete.** Use deterministic introductions, examinations, topic changes, and schedule gaps. Show supporting events and require an explicit choice before changing the editor.
+5. **Privacy and storage baseline, complete.** Use fictional integration fixtures, ignore local fetch metadata, store mutable data under Application Support, migrate older local state safely, bound generated history, and offer a reset action.
+6. **Reliability work, ongoing.** Continue testing recurrence behavior, offline startup, sleep/wake, midnight changes, login approval, inactive Spaces, and reconnecting monitors. Add multiple feeds or display-specific layouts only when the product needs them.
+7. **Public release, deferred.** When outside testing is likely, create a generic release build with no private seed data, choose a permanent bundle identifier, then add the native project, signing, notarization, packaging, and clean-machine verification.
 
-## Progress — 7 September 2026
+## Progress — 8 September 2026
 
-Module suggestions added on 8 September 2026: the editor offers local, editable proposals with supporting event titles and dates. Introductions, examinations, topic introductions and schedule gaps inform boundaries. The supplied course yields Worldbuilding from 8–30 September and Intersectionality & Norms from 5 October–4 November. Suggestions require an explicit Use module action; manual editing and saved exclusions remain available.
+Module suggestions are local and editable, with supporting event titles and dates. Introductions, examinations, topic introductions, and schedule gaps inform boundaries. Suggestions require an explicit Use module action; manual editing and saved exclusions remain available.
 
 Step 1 is implemented, including weekday-only tables, complete boundary weeks, compact layout, and reversible individual event exclusions.
 
@@ -105,6 +106,8 @@ Validation covers HEIC frame dimensions/mapping, image round-trip quality, inval
 
 Step 3 is implemented as a local first version. The AppKit window now embeds the existing editor in WKWebView, and the built app uses bundled ICAL.js and URLSession without a Node runtime. It saves the subscription, module/month controls, filters, exclusions, display choice, and cache state. Direct Apply renders paired PNGs to HEIC. Optional wallpaper updates run after edits, refreshes, and local date changes. HTTP freshness and validators control scheduled checks; failures retain the prior calendar and wallpaper. A menu bar item keeps the app accessible when its window closes, and an optional SMAppService control registers launch at login.
 
-Live verification covered the supplied feed, cache feedback, reopening saved data, direct Apply, and restoration. Automated checks cover editor state and exclusions across refresh, invalid calendar retention, paired rendering, cache policy, and missing wallpaper sources. The initial Apply regression came from requiring the old wallpaper file to exist before allowing a new one; Apply now works without that file and reports the restoration limitation.
+Live verification covered the local feed, cache feedback, reopening saved data, direct Apply, and restoration. Automated checks cover editor state and exclusions across refresh, invalid calendar retention, paired rendering, cache policy, missing wallpaper sources, storage migration, and data reset. Preview and editor integration tests now build from fictional fixtures instead of the private calendar snapshot.
 
-The remaining work is lifecycle verification and packaging. Wake, midnight/month rollover, launch-at-login approval and a full login cycle, inactive Spaces, and external display reconnection have not been tested live. State still lives beside the app, and the private seed snapshot/URL are bundled for this local build. Moving state to Application Support and producing a distributable, notarized app remain packaging tasks.
+Runtime settings, cached calendar data, recovery records, and generated wallpapers now live under `~/Library/Application Support/local.wapacal.app/`. The first Wapacal launch copies older runtime files from `local.timetable.wallpaper` or from beside the previous bundle and removes each source only after its destination succeeds. Files currently used as wallpapers remain in place. Inactive applied wallpaper history is capped at 24 files, archived recovery history at 20, and Reset data clears private state without breaking the active wallpaper or current restore path.
+
+The remaining near-term work is product development and lifecycle verification. Wake, midnight/month rollover, launch-at-login approval and a full login cycle, inactive Spaces, and external display reconnection have not all been tested live. The development bundle still embeds the local seed snapshot and subscription URL. A generic build, permanent bundle identity, Xcode project, release signing, notarization, and installer remain deferred until an outside beta is plausible.

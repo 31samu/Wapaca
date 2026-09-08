@@ -5,7 +5,7 @@ import {loadFixtureApp} from './helpers/fixture-app.mjs';
 async function setup(){
  const messages=[];
  const {editor,seed}=await loadFixtureApp();
- const dom=new JSDOM(editor,{runScripts:'dangerously',beforeParse(w){w.webkit={messageHandlers:{timetable:{postMessage:m=>messages.push(m)}}};}});
+ const dom=new JSDOM(editor,{runScripts:'dangerously',beforeParse(w){w.webkit={messageHandlers:{wapacal:{postMessage:m=>messages.push(m)}}};}});
  dom.window.nativeLoad(seed);
  return {dom,seed,messages};
 }
@@ -121,4 +121,27 @@ test('reset clears the cached calendar and restores neutral editor defaults',asy
   assert.equal(editor.course,'');
   assert.equal(editor.excludedEventIds.length,0);
   dom.window.close();
+});
+
+test('multiple subscriptions load together, keep independent selections, and validate before replacing',async()=>{
+ const {dom,seed,messages}=await setup();
+ const sources=[{id:'legacy',legacyIds:true,name:'TimeEdit',kind:'timeedit',ics:calendar(session('same','Lecture'))},
+  {id:'moodle',name:'Moodle',kind:'generic',ics:calendar(session('same','Assignment deadline'))}];
+ dom.window.nativeLoad({...seed,subscriptions:sources,editor:{course:'',mode:'module',start:'2026-09-01',end:'2026-09-30',excludedEventIds:['same']}});
+ const d=dom.window.document;
+ assert.match(d.getElementById('wallpaper').innerHTML,/Assignment deadline/);
+ assert.doesNotMatch(d.getElementById('wallpaper').innerHTML,/>Lecture</);
+ assert.equal(d.querySelectorAll('#event-list input').length,2);
+ assert.match(d.getElementById('event-list').textContent,/Moodle/);
+ const before=d.getElementById('wallpaper').innerHTML;
+ assert.throws(()=>dom.window.nativeCalendars([...sources,{id:'invalid',ics:'invalid'}],'2026-09-09T12:00:00Z'));
+ assert.equal(d.getElementById('wallpaper').innerHTML,before);
+ dom.window.nativeCalendars(sources.toReversed(),'2026-09-09T12:00:00Z');
+ assert.equal(d.querySelector('[data-event-id="same"]').checked,false);
+ dom.window.nativeCalendars([sources[1]],'2026-09-09T12:00:00Z');
+ assert.equal(d.querySelectorAll('#event-list input').length,1);
+ assert.ok(messages.filter(m=>m.type==='settings').at(-1).editor.excludedEventIds.includes('same'));
+ dom.window.nativeCalendars([],'2026-09-09T12:00:00Z');
+ assert.equal(d.querySelectorAll('#event-list input').length,0);
+ dom.window.close();
 });

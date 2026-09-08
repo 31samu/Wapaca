@@ -87,7 +87,7 @@ struct PairExport: Decodable {
 func importPair(_ url: URL, to destination: URL) throws {
     let pair = try JSONDecoder().decode(PairExport.self, from: readBounded(url))
     guard pair.version == 1, let light = Data(base64Encoded: pair.light), let dark = Data(base64Encoded: pair.dark) else {
-        throw WallpaperError.invalid("Invalid timetable export.")
+        throw WallpaperError.invalid("Invalid Wapacal export.")
     }
     try encodePair(light: loadImage(light), dark: loadImage(dark), to: destination)
 }
@@ -135,12 +135,12 @@ struct WallpaperBackup: Codable {
 }
 
 func workspaceDirectory() -> URL {
-    if let override = ProcessInfo.processInfo.environment["TIMETABLE_APP_SUPPORT"], !override.isEmpty {
+    if let override = ProcessInfo.processInfo.environment["WAPACAL_APP_SUPPORT"], !override.isEmpty {
         return URL(fileURLWithPath: override, isDirectory: true)
     }
     if Bundle.main.bundleURL.pathExtension == "app" {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return root.appendingPathComponent(Bundle.main.bundleIdentifier ?? "local.timetable.wallpaper", isDirectory: true)
+        return root.appendingPathComponent(Bundle.main.bundleIdentifier ?? "local.wapacal.app", isDirectory: true)
     }
     return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("output", isDirectory: true)
 }
@@ -157,7 +157,7 @@ func ensureWorkspaceDirectories() throws {
 }
 
 func legacyWorkspaceDirectory() -> URL {
-    if let override = ProcessInfo.processInfo.environment["TIMETABLE_LEGACY_WORKSPACE"], !override.isEmpty {
+    if let override = ProcessInfo.processInfo.environment["WAPACAL_LEGACY_WORKSPACE"], !override.isEmpty {
         return URL(fileURLWithPath: override, isDirectory: true)
     }
     if Bundle.main.bundleURL.pathExtension == "app" { return Bundle.main.bundleURL.deletingLastPathComponent() }
@@ -169,44 +169,50 @@ private struct MigrationItem {
     let destination: URL
 }
 
+func previousApplicationSupportDirectory() -> URL? {
+    guard Bundle.main.bundleURL.pathExtension == "app" else { return nil }
+    let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    return root.appendingPathComponent("local.timetable.wallpaper", isDirectory: true)
+}
+
 func migrateLegacyWorkspace() throws {
     try ensureWorkspaceDirectories()
     let files = FileManager.default
-    let legacy = legacyWorkspaceDirectory()
-    guard legacy.standardizedFileURL != workspaceDirectory().standardizedFileURL,
-          files.fileExists(atPath: legacy.path) else { return }
-    var items = [
-        MigrationItem(source: legacy.appendingPathComponent("app-state.json"), destination: stateDirectory().appendingPathComponent("app-state.json")),
-        MigrationItem(source: legacy.appendingPathComponent("editor-wallpaper.heic"), destination: wallpapersDirectory().appendingPathComponent("editor-wallpaper.heic"))
-    ]
-    for url in try files.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil) {
-        let name = url.lastPathComponent
-        if name.hasPrefix("restore-") || name.hasPrefix("restored-") || name.hasPrefix("unavailable-") {
-            items.append(MigrationItem(source: url, destination: recoveryDirectory().appendingPathComponent(name)))
+    let candidates = ([previousApplicationSupportDirectory(), legacyWorkspaceDirectory()] as [URL?]).compactMap { $0 }
+    for legacy in candidates where legacy.standardizedFileURL != workspaceDirectory().standardizedFileURL && files.fileExists(atPath: legacy.path) {
+        var items = [
+            MigrationItem(source: legacy.appendingPathComponent("app-state.json"), destination: stateDirectory().appendingPathComponent("app-state.json")),
+            MigrationItem(source: legacy.appendingPathComponent("editor-wallpaper.heic"), destination: wallpapersDirectory().appendingPathComponent("editor-wallpaper.heic"))
+        ]
+        for url in try files.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil) {
+            let name = url.lastPathComponent
+            if name.hasPrefix("restore-") || name.hasPrefix("restored-") || name.hasPrefix("unavailable-") {
+                items.append(MigrationItem(source: url, destination: recoveryDirectory().appendingPathComponent(name)))
+            }
         }
-    }
-    let legacyApplied = legacy.appendingPathComponent("applied", isDirectory: true)
-    if files.fileExists(atPath: legacyApplied.path) {
-        for url in try files.contentsOfDirectory(at: legacyApplied, includingPropertiesForKeys: nil) {
-            items.append(MigrationItem(source: url, destination: appliedDirectory().appendingPathComponent(url.lastPathComponent)))
+        let legacyApplied = legacy.appendingPathComponent("applied", isDirectory: true)
+        if files.fileExists(atPath: legacyApplied.path) {
+            for url in try files.contentsOfDirectory(at: legacyApplied, includingPropertiesForKeys: nil) {
+                items.append(MigrationItem(source: url, destination: appliedDirectory().appendingPathComponent(url.lastPathComponent)))
+            }
         }
-    }
-    let active = Set(NSScreen.screens.compactMap { NSWorkspace.shared.desktopImageURL(for: $0)?.standardizedFileURL.path })
-    var copied: [MigrationItem] = []
-    do {
-        for item in items where files.fileExists(atPath: item.source.path) && !files.fileExists(atPath: item.destination.path) {
-            try files.copyItem(at: item.source, to: item.destination)
-            copied.append(item)
+        let active = Set(NSScreen.screens.compactMap { NSWorkspace.shared.desktopImageURL(for: $0)?.standardizedFileURL.path })
+        var copied: [MigrationItem] = []
+        do {
+            for item in items where files.fileExists(atPath: item.source.path) && !files.fileExists(atPath: item.destination.path) {
+                try files.copyItem(at: item.source, to: item.destination)
+                copied.append(item)
+            }
+        } catch {
+            for item in copied { try? files.removeItem(at: item.destination) }
+            throw error
         }
-    } catch {
-        for item in copied { try? files.removeItem(at: item.destination) }
-        throw error
-    }
-    for item in copied where !active.contains(item.source.standardizedFileURL.path) {
-        try files.removeItem(at: item.source)
-    }
-    if let remaining = try? files.contentsOfDirectory(atPath: legacyApplied.path), remaining.isEmpty {
-        try? files.removeItem(at: legacyApplied)
+        for item in copied where !active.contains(item.source.standardizedFileURL.path) {
+            try files.removeItem(at: item.source)
+        }
+        if let remaining = try? files.contentsOfDirectory(atPath: legacyApplied.path), remaining.isEmpty {
+            try? files.removeItem(at: legacyApplied)
+        }
     }
 }
 
@@ -267,7 +273,7 @@ func applyWallpaper(_ url: URL, screen: NSScreen) throws -> Bool {
     }
     // A new filename prevents macOS reusing a cached render of the previous file.
     let applied = appliedDirectory()
-    let copy = applied.appendingPathComponent("timetable-\(UUID().uuidString).heic")
+    let copy = applied.appendingPathComponent("wapacal-\(UUID().uuidString).heic")
     try data.write(to: copy, options: .atomic)
     try NSWorkspace.shared.setDesktopImageURL(copy, for: screen, options: [.imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue, .allowClipping: false])
     let record = try JSONDecoder().decode(WallpaperBackup.self, from: Data(contentsOf: backup))
@@ -297,7 +303,7 @@ func restoreWallpaper(screen: NSScreen) throws {
 
 final class WallpaperApp: NSObject, NSApplicationDelegate {
     var window: NSWindow!
-    let status = NSTextField(wrappingLabelWithString: "Open a paired HEIC or a .timetable export from the preview.")
+    let status = NSTextField(wrappingLabelWithString: "Open a paired HEIC or a .wapacal export from the preview.")
     let picker = NSPopUpButton(frame: .zero)
     let lightView = NSImageView(); let darkView = NSImageView()
     var applyButton: NSButton!
@@ -308,9 +314,9 @@ final class WallpaperApp: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         let menu = NSMenu(); let appItem = NSMenuItem(); menu.addItem(appItem)
-        let submenu = NSMenu(); submenu.addItem(withTitle: "Quit Timetable Wallpaper", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = submenu; NSApp.mainMenu = menu
+        let submenu = NSMenu(); submenu.addItem(withTitle: "Quit Wapacal", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = submenu; NSApp.mainMenu = menu
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 510), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "Timetable Wallpaper"; window.center(); window.isReleasedWhenClosed = false
+        window.title = "Wapacal"; window.center(); window.isReleasedWhenClosed = false
         let root = NSStackView(); root.orientation = .vertical; root.alignment = .leading; root.spacing = 18
         root.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
         let title = NSTextField(labelWithString: "One wallpaper. Two appearances."); title.font = .systemFont(ofSize: 24, weight: .medium)
@@ -351,7 +357,7 @@ final class WallpaperApp: NSObject, NSApplicationDelegate {
 
     @objc func openFile() {
         let panel = NSOpenPanel(); panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
-        panel.message = "Select a paired HEIC or a .timetable export."
+        panel.message = "Select a paired HEIC or a .wapacal export. Legacy .timetable exports also work."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         openURL(url)
     }
@@ -422,7 +428,7 @@ if args.isEmpty {
             }
         case "status":
             try printJSON(NSScreen.screens.map { ["name": $0.localizedName, "id": screenID($0), "wallpaper": NSWorkspace.shared.desktopImageURL(for: $0)?.absoluteString ?? "", "appearance": NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])?.rawValue ?? "unknown"] })
-        default: throw WallpaperError.invalid("Commands: encode LIGHT DARK OUTPUT.heic | import EXPORT.timetable OUTPUT.heic | inspect FILE.heic [EXTRACT_DIRECTORY] | status. Run without arguments for the app.")
+        default: throw WallpaperError.invalid("Commands: encode LIGHT DARK OUTPUT.heic | import EXPORT.wapacal OUTPUT.heic | inspect FILE.heic [EXTRACT_DIRECTORY] | status. Run without arguments for the app.")
         }
     } catch { fputs(error.localizedDescription + "\n", stderr); exit(1) }
 }

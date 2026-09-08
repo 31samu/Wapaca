@@ -14,9 +14,10 @@ export function cleanDescription(value = '') {
 
 // The first prototype accepts concrete UTC events and date-only events. Reject
 // unsupported calendar semantics instead of silently rendering wrong dates.
-export function parseCalendar(source, timeZone = 'Europe/Stockholm') {
+export function parseCalendar(source, timeZone = 'Europe/Stockholm', kind = 'auto') {
   const calendar = new ICAL.Component(ICAL.parse(source));
   if (calendar.name !== 'vcalendar') throw new Error('Expected an iCalendar VCALENDAR.');
+  const timeEdit = kind === 'timeedit' || (kind === 'auto' && /timeedit/i.test(calendar.getFirstPropertyValue('prodid') || source));
   const keys = new Set();
   const events = calendar.getAllSubcomponents('vevent').map(component => {
     const event = new ICAL.Event(component);
@@ -38,18 +39,19 @@ export function parseCalendar(source, timeZone = 'Europe/Stockholm') {
     if (end < start) throw new Error('An event ends before it starts.');
     const startLocal = allDay ? {date: start, time: ''} : localParts(start, timeZone);
     const endLocal = allDay ? {date: end, time: ''} : localParts(end, timeZone);
-    const description = cleanDescription(event.description);
     const summary = event.summary || 'Untitled event';
+    const specialized = timeEdit || (kind === 'auto' && /,\s*\d[A-Z]{2}\d{3}\b/.test(summary));
+    const description = specialized ? cleanDescription(event.description) : (event.description || '').trim();
     const summaryParts = summary.split(',').map(part => part.trim());
     const courseIndex = summaryParts.findIndex(part => /^\d[A-Z]{2}\d{3}$/.test(part));
     const fallbackTitle = courseIndex > 0 ? summaryParts.slice(0, courseIndex).join(', ') : summary;
-    const title = description.split('\n').find(line => line.trim())?.trim() || fallbackTitle;
+    const title = specialized ? description.split('\n').find(line => line.trim())?.trim() || fallbackTitle : summary;
     const location = (event.location || '').replace(/\s+/g, ' ').trim();
-    const room = location.match(/\b[A-Z]\d{3,4}[A-Z]?(?=\b|_)/)?.[0] || location;
+    const room = !specialized ? location : location.match(/\b[A-Z]\d{3,4}[A-Z]?(?=\b|_)/)?.[0] || location;
     const mentionedRooms = [...description.matchAll(/\b[A-Z]\d{3,4}[A-Z]?\b/g)].map(match => match[0]);
-    const roomConflict = Boolean(room && mentionedRooms.some(value => value !== room));
+    const roomConflict = Boolean(specialized && room && mentionedRooms.some(value => value !== room));
     return {
-      uid: event.uid, start, end, allDay, date: startLocal.date,
+      uid: event.uid, calendarKind: specialized ? 'timeedit' : 'generic', start, end, allDay, date: startLocal.date,
       startTime: startLocal.time, endDate: endLocal.date, endTime: endLocal.time,
       title, summary, description, location,
       room: room + (/zoom/i.test(location) && !/zoom/i.test(room) ? ' · Zoom' : ''),
@@ -61,4 +63,25 @@ export function parseCalendar(source, timeZone = 'Europe/Stockholm') {
   }).filter(Boolean);
   events.sort((a, b) => a.start.localeCompare(b.start) || a.uid.localeCompare(b.uid));
   return { name: calendar.getFirstPropertyValue('x-wr-calname') || 'Calendar', timeZone, events };
+}
+
+// Source IDs stay local and never contain the subscription URL or its credentials.
+export function parseCalendars(subscriptions, timeZone = 'Europe/Stockholm') {
+  const ids = new Set();
+  const events = [];
+  let name = 'Calendars';
+  for (const source of subscriptions) {
+    if (!source.id || ids.has(source.id)) throw new Error('Missing or duplicate subscription ID.');
+    ids.add(source.id);
+    if (!source.ics) continue;
+    const parsed = parseCalendar(source.ics, timeZone, source.kind || 'auto');
+    if (source.legacyIds) name = parsed.name;
+    for (const event of parsed.events) events.push({...event,
+      uid: source.legacyIds ? event.uid : JSON.stringify([source.id, event.uid]),
+      sourceId: source.id, sourceName: source.name || parsed.name, originalUid: event.uid
+    });
+  }
+  if (new Set(events.map(event => event.uid)).size !== events.length) throw new Error('Duplicate combined event ID.');
+  events.sort((a,b) => a.start.localeCompare(b.start) || a.uid.localeCompare(b.uid));
+  return {name, timeZone, events};
 }

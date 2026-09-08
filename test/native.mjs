@@ -7,9 +7,9 @@ import {join,resolve} from 'node:path';
 import sharp from 'sharp';
 import {renderWallpaper} from '../src/layout.mjs';
 import {loadFixtureApp} from './helpers/fixture-app.mjs';
-const binary=resolve('output/Timetable Wallpaper.app/Contents/MacOS/TimetableWallpaper');
+const binary=resolve('output/Wapacal.app/Contents/MacOS/Wapacal');
 test('native export imports, validates both frames, and rejects invalid inputs without overwriting',async()=>{
- const dir=await mkdtemp(join(tmpdir(),'timetable-heic-'));
+ const dir=await mkdtemp(join(tmpdir(),'wapacal-heic-'));
  const {data,config}=await loadFixtureApp();
  const images={};
  for(const theme of ['light','dark']){
@@ -18,7 +18,7 @@ test('native export imports, validates both frames, and rejects invalid inputs w
   await sharp(Buffer.from(rendered.svg)).png().toFile(images[theme]);
  }
  const pair={version:1,name:'Test',light:(await readFile(images.light)).toString('base64'),dark:(await readFile(images.dark)).toString('base64')};
- const source=join(dir,'test.timetable'),output=join(dir,'test.heic');
+ const source=join(dir,'test.wapacal'),output=join(dir,'test.heic');
  await writeFile(source,JSON.stringify(pair));
  const info=JSON.parse(execFileSync(binary,['import',source,output],{encoding:'utf8'}));
  assert.deepEqual(info,{frameCount:2,width:3024,height:1964,lightIndex:0,darkIndex:1});
@@ -42,11 +42,11 @@ test('native export imports, validates both frames, and rejects invalid inputs w
 });
 
 test('missing wallpaper sources can be recorded without blocking Apply and old backups still decode',async()=>{
- const dir=await mkdtemp(join(tmpdir(),'timetable-backup-'));
+ const dir=await mkdtemp(join(tmpdir(),'wapacal-backup-'));
  const source=(await readFile('native/Wallpaper.swift','utf8')).split('final class WallpaperApp:')[0];
  const file=join(dir,'backup.swift');
  await writeFile(file,source+`
-let missing = URL(fileURLWithPath: "/nonexistent/timetable-test-wallpaper.png")
+let missing = URL(fileURLWithPath: "/nonexistent/wapacal-test-wallpaper.png")
 for url in [nil, missing, URL(string: "https://example.com/image.png")] as [URL?] {
  let record = WallpaperBackup(screenID: "test", url: url, options: [.imageScaling: 3, .allowClipping: true])
  let decoded = try JSONDecoder().decode(WallpaperBackup.self, from: JSONEncoder().encode(record))
@@ -59,11 +59,11 @@ let decoded = try JSONDecoder().decode(WallpaperBackup.self, from: old)
 assert(decoded.canRestore)
 print("Backup regression checks passed")
 `);
- assert.match(execFileSync('swift',['-module-cache-path','/tmp/timetable-swift-cache',file],{encoding:'utf8'}),/checks passed/);
+ assert.match(execFileSync('swift',['-module-cache-path','/tmp/wapacal-swift-cache',file],{encoding:'utf8'}),/checks passed/);
 });
 
 test('refresh frequency accepts only the choices shown in the app',async()=>{
- const dir=await mkdtemp(join(tmpdir(),'timetable-cache-'));
+ const dir=await mkdtemp(join(tmpdir(),'wapacal-cache-'));
  const policy=(await readFile('native/Editor.swift','utf8')).split('final class EditorApp:')[0];
  const file=join(dir,'policy.swift');
  await writeFile(file,'import Foundation\n'+policy+`
@@ -77,11 +77,11 @@ assert(savedRefreshInterval(.nan) == 3600)
 assert(savedRefreshInterval(.infinity) == 3600)
 print("Cache policy checks passed")
 `);
- assert.match(execFileSync('swift',['-module-cache-path','/tmp/timetable-swift-cache',file],{encoding:'utf8'}),/checks passed/);
+ assert.match(execFileSync('swift',['-module-cache-path','/tmp/wapacal-swift-cache',file],{encoding:'utf8'}),/checks passed/);
 });
 
 test('legacy runtime data migrates to app support and reset preserves active recovery records',async()=>{
- const dir=await mkdtemp(join(tmpdir(),'timetable-storage-'));
+ const dir=await mkdtemp(join(tmpdir(),'wapacal-storage-'));
  const legacy=join(dir,'legacy'),support=join(dir,'support');
  await mkdir(join(legacy,'applied'),{recursive:true});
  await Promise.all([
@@ -108,6 +108,6 @@ assert(!files.fileExists(atPath: recoveryDirectory().appendingPathComponent("res
 assert(!files.fileExists(atPath: appliedDirectory().appendingPathComponent("old.heic").path))
 print("Storage migration checks passed")
 `);
- const output=execFileSync('swift',['-module-cache-path','/tmp/timetable-swift-cache',file],{encoding:'utf8',env:{...process.env,TIMETABLE_APP_SUPPORT:support,TIMETABLE_LEGACY_WORKSPACE:legacy}});
+ const output=execFileSync('swift',['-module-cache-path','/tmp/wapacal-swift-cache',file],{encoding:'utf8',env:{...process.env,WAPACAL_APP_SUPPORT:support,WAPACAL_LEGACY_WORKSPACE:legacy}});
  assert.match(output,/checks passed/);
 });

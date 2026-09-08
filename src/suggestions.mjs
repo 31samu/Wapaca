@@ -9,7 +9,7 @@ export function suggestModules(events, course = '', excludedEventIds = []) {
     if (/https?:|registration|\b(tutor(?:ing|ials?)?|practice|seminar|workshop|intro|presentations?|examination|following|peer|writing support)\b/i.test(title) || title.length > 70) return '';
     return title;
   };
-  const candidates = events.filter(event => !event.cancelled && !event.allDay && !excluded.has(event.uid)
+  const candidates = events.filter(event => event.calendarKind !== 'generic' && !event.cancelled && !event.allDay && !excluded.has(event.uid)
     && ![0,6].includes(new Date(event.date + 'T00:00:00Z').getUTCDay())
     && (!course || event.summary.split(',').map(s => s.trim()).includes(course)))
     .sort((a,b) => a.start.localeCompare(b.start) || a.uid.localeCompare(b.uid));
