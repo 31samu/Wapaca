@@ -1,18 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
 import {JSDOM,VirtualConsole} from 'jsdom';
 import sharp from 'sharp';
 import {renderWallpaper,selectEvents} from '../src/layout.mjs';
+import {loadFixtureApp} from './helpers/fixture-app.mjs';
 
-test('actual feed: 24 course events, 12 in each initial view, all fit at the detected screen size',async()=>{
-  const data=JSON.parse(await readFile('output/events.json','utf8'));
-  const config=JSON.parse(await readFile('config.example.json','utf8'));
-  assert.equal(data.events.length,56);assert.equal(selectEvents(data.events,'1DI300').length,24);
+test('sanitized fixture fits the initial module in both appearances',async()=>{
+  const {data,config}=await loadFixtureApp();
+  assert.equal(data.events.length,12);assert.equal(selectEvents(data.events,'1AB101').length,9);
   for(const mode of ['month','module'])for(const theme of ['light','dark']){
     const options={...config,...config.module,mode,theme,month:'2026-09'};
     const result=renderWallpaper(data.events,options);
-    assert.equal(result.grid.visible.length,12);assert.equal(result.grid.weeks,5);
+    assert.equal(result.grid.visible.length,mode==='month'?5:4);assert.equal(result.grid.weeks,5);
     assert.equal(result.grid.columns,5);
     assert.deepEqual(result.warnings,[],`${mode} ${theme} should fit every source title and event`);
     for(const bound of result.bounds){
@@ -21,41 +20,41 @@ test('actual feed: 24 course events, 12 in each initial view, all fit at the det
       assert.ok(bound.y<=result.logicalHeight,`Vertical text overflow: ${bound.text}`);
     }
   }
-  const metadata=await sharp('output/module-2026-10-05-light.png').metadata();
+  const metadata=await sharp(Buffer.from(renderWallpaper(data.events,{...config,...config.module,mode:'module',theme:'light'}).svg)).metadata();
   assert.equal(metadata.width,3024);assert.equal(metadata.height,1964);
 });
 
 test('preview switches theme, edits module dates, changes month, reveals details and blocks invalid exports',async()=>{
-  const html=await readFile('output/preview.html','utf8');
+  const {preview:html}=await loadFixtureApp();
   const errors=[];const vc=new VirtualConsole();vc.on('jsdomError',error=>errors.push(error));
   const dom=new JSDOM(html,{runScripts:'dangerously',virtualConsole:vc});
   const {document,Event}=dom.window;const el=id=>document.getElementById(id);
   const change=(id,value,type='input')=>{el(id).value=value;el(id).dispatchEvent(new Event(type,{bubbles:true}));};
-  assert.equal(errors.length,0);assert.equal(document.querySelectorAll('.event').length,12);
+  assert.equal(errors.length,0);assert.equal(document.querySelectorAll('.event').length,4);
   assert.equal(document.querySelector('aside').lastElementChild.classList.contains('export-actions'),true);
   assert.equal(el('weekends'),null);
-  assert.match(el('wallpaper').innerHTML,/Intersectionality/);
+  assert.match(el('wallpaper').innerHTML,/Prototyping/);
   change('theme','dark');assert.match(el('wallpaper').innerHTML,/#18231f/);
   change('module-name','My module');assert.match(el('wallpaper').innerHTML,/My module/);
   el('show-title').checked=false;el('show-title').dispatchEvent(new Event('change',{bubbles:true}));assert.doesNotMatch(el('wallpaper').innerHTML,/>My module<\/text>/);
-  change('start','2026-10-12');assert.equal(document.querySelectorAll('.event').length,6);
-  change('mode','month');change('month','2026-09');assert.equal(document.querySelectorAll('.event').length,12);
+  change('start','2026-10-12');assert.equal(document.querySelectorAll('.event').length,3);
+  change('mode','month');change('month','2026-09');assert.equal(document.querySelectorAll('.event').length,5);
   assert.match(el('wallpaper').innerHTML,/September 2026/);
   assert.doesNotMatch(el('wallpaper').innerHTML,/SATURDAY|SUNDAY/);
-  assert.match(el('event-list').textContent,/M1099B/);
+  assert.match(el('event-list').textContent,/R100/);
   assert.ok(document.querySelector('.conflict'));
-  change('course','all','change');assert.equal(document.querySelectorAll('.event').length,20);
+  change('course','all','change');assert.equal(document.querySelectorAll('.event').length,7);
   change('mode','module');change('end','2026-01-01');assert.ok(el('export-png').disabled);assert.match(el('error').textContent,/valid/);
   dom.window.close();
 });
 
-test('Worldbuilding all-events export fits every event without overlaps in both appearances',async()=>{
-  const data=JSON.parse(await readFile('output/events.json','utf8'));
+test('September all-events export fits every fixture event without overlaps in both appearances',async()=>{
+  const {data}=await loadFixtureApp();
   for(const theme of ['light','dark']){
-    const result=renderWallpaper(data.events,{mode:'module',name:'Worldbuilding',start:'2026-08-31',end:'2026-09-30',course:'',theme,width:3024,height:1964});
-    assert.equal(result.grid.visible.length,20);
-    assert.equal(result.placements.length,20);
-    assert.equal(new Set(result.placements.map(p=>p.uid)).size,20);
+    const result=renderWallpaper(data.events,{mode:'module',name:'September overview',start:'2026-08-31',end:'2026-09-30',course:'',theme,width:3024,height:1964});
+    assert.equal(result.grid.visible.length,7);
+    assert.equal(result.placements.length,7);
+    assert.equal(new Set(result.placements.map(p=>p.uid)).size,7);
     assert.ok(!result.warnings.some(warning=>warning.includes('not fit')));
     for(const placement of result.placements){
       assert.ok(placement.top>=placement.rowTop);
@@ -69,17 +68,17 @@ test('Worldbuilding all-events export fits every event without overlaps in both 
 });
 
 test('event exclusions remain reversible, persist on reload and affect exports',async()=>{
-  const html=await readFile('output/preview.html','utf8');
+  const {preview:html}=await loadFixtureApp();
   const create=saved=>new JSDOM(html,{url:'https://timetable.example/preview',runScripts:'dangerously',beforeParse(window){
     if(saved)for(const [key,value] of saved)window.localStorage.setItem(key,value);
   }});
   const dom=create();const {document,Event}=dom.window;
-  const findFinal=()=>[...document.querySelectorAll('#event-list input')].find(input=>input.getAttribute('aria-label').includes('Final presentations'));
+  const findFinal=()=>[...document.querySelectorAll('#event-list input')].find(input=>input.getAttribute('aria-label').includes('Launch presentation'));
   const input=findFinal();const uid=input.dataset.eventId;
   input.checked=false;input.dispatchEvent(new Event('change'));
-  assert.equal(findFinal().checked,false);assert.equal(document.querySelectorAll('.event').length,12);
-  assert.match(document.getElementById('detail-count').textContent,/11 included · 1 excluded/);
-  assert.doesNotMatch(document.getElementById('wallpaper').innerHTML,/Final presentations/);
+  assert.equal(findFinal().checked,false);assert.equal(document.querySelectorAll('.event').length,4);
+  assert.match(document.getElementById('detail-count').textContent,/3 included · 1 excluded/);
+  assert.doesNotMatch(document.getElementById('wallpaper').innerHTML,/Launch presentation/);
   document.getElementById('theme').value='dark';document.getElementById('theme').dispatchEvent(new Event('input'));
   assert.equal(findFinal().checked,false);
   assert.equal(document.getElementById('export-svg'),null);
@@ -88,16 +87,16 @@ test('event exclusions remain reversible, persist on reload and affect exports',
   const reload=create(saved);const check=[...reload.window.document.querySelectorAll('#event-list input')].find(input=>input.dataset.eventId===uid);
   assert.equal(check.checked,false);
   check.checked=true;check.dispatchEvent(new reload.window.Event('change'));
-  assert.match(reload.window.document.getElementById('wallpaper').innerHTML,/Final presentations/);
-  assert.match(reload.window.document.getElementById('detail-count').textContent,/12 included · 0 excluded/);
+  assert.match(reload.window.document.getElementById('wallpaper').innerHTML,/Launch presentation/);
+  assert.match(reload.window.document.getElementById('detail-count').textContent,/4 included · 0 excluded/);
   dom.window.close();reload.window.close();
 });
 
 test('Mac export freezes both appearances and event exclusions while rendering',async()=>{
-  const html=await readFile('output/preview.html','utf8');
+  const {preview:html}=await loadFixtureApp();
   const dom=new JSDOM(html,{runScripts:'dangerously'});
   const {document,Event}=dom.window;
-  const input=[...document.querySelectorAll('#event-list input')].find(input=>input.getAttribute('aria-label').includes('Final presentations'));
+  const input=[...document.querySelectorAll('#event-list input')].find(input=>input.getAttribute('aria-label').includes('Launch presentation'));
   input.checked=false;input.dispatchEvent(new Event('change'));
   const frames=[];let finish;
   const downloaded=new Promise(resolve=>finish=resolve);
@@ -111,6 +110,6 @@ test('Mac export freezes both appearances and event exclusions while rendering',
   assert.equal(Buffer.from(payload.light,'base64').toString(),'test PNG bytes');
   assert.equal(payload.light,payload.dark);assert.equal(frames.length,2);
   assert.match(frames[0],/#f0efe9/);assert.match(frames[1],/#18231f/);
-  for(const svg of frames)assert.doesNotMatch(svg,/Final presentations/);
+  for(const svg of frames)assert.doesNotMatch(svg,/Launch presentation/);
   dom.window.close();
 });

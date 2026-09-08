@@ -4,6 +4,7 @@ node_modules/
 # Private calendar configuration and downloaded feed
 config.local.json
 data/calendar.ics
+data/source.json
 
 # Generated previews, images, app bundles, HEIC files, and runtime state
 output/

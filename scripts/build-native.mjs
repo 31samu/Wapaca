@@ -25,15 +25,15 @@ execFileSync('swiftc',['-module-cache-path','/tmp/timetable-swift-cache',join(te
 const resources=`${bundle}/Contents/Resources`;
 await mkdir(resources,{recursive:true});
 const config=JSON.parse(await readFile('config.local.json','utf8').catch(()=>readFile('config.example.json','utf8')));
+const metadata=JSON.parse(await readFile('data/source.json','utf8').catch(()=>'{}'));
 const parser=(await readFile('src/calendar.mjs','utf8')).replace(/^import .*$/gm,'').replace(/^export /gm,'');
 const engine=await readFile('node_modules/ical.js/dist/ical.es5.min.cjs','utf8');
 const editor=await readFile('src/native-editor.js','utf8');
 const preview=await readFile('output/preview.html','utf8');
 await writeFile(`${resources}/editor.html`,preview.replace('</head>',`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'">\n</head>`).replace('</body>',()=>`<script>${engine}\n${parser}\n${editor}</script></body>`));
-await writeFile(`${resources}/seed.json`,JSON.stringify({subscriptionUrl:config.subscriptionUrl||'',courseCode:config.course,ics:await readFile('data/calendar.ics','utf8'),fetchedAt:JSON.parse(await readFile('data/source.json','utf8')).fetchedAt}));
+await writeFile(`${resources}/seed.json`,JSON.stringify({subscriptionUrl:config.subscriptionUrl||'',courseCode:config.course,ics:await readFile('data/calendar.ics','utf8'),fetchedAt:metadata.fetchedAt||null}));
 await writeFile(`${resources}/ICAL-LICENSE`,await readFile('node_modules/ical.js/LICENSE'));
-// File Provider can attach Finder metadata to the generated bundle directory.
-const attributes=execFileSync('xattr',[bundle],{encoding:'utf8'}).split('\n');
-for(const name of ['com.apple.FinderInfo','com.apple.ResourceFork'])if(attributes.includes(name))execFileSync('xattr',['-d',name,bundle]);
+// File Provider can attach metadata anywhere inside the generated bundle.
+execFileSync('xattr',['-cr',bundle]);
 execFileSync('codesign',['--force','--sign','-',bundle],{stdio:'inherit'});
 console.log(bundle);

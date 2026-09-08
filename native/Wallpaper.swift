@@ -135,20 +135,130 @@ struct WallpaperBackup: Codable {
 }
 
 func workspaceDirectory() -> URL {
-    if Bundle.main.bundleURL.pathExtension == "app" { return Bundle.main.bundleURL.deletingLastPathComponent() }
-    return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("output")
+    if let override = ProcessInfo.processInfo.environment["TIMETABLE_APP_SUPPORT"], !override.isEmpty {
+        return URL(fileURLWithPath: override, isDirectory: true)
+    }
+    if Bundle.main.bundleURL.pathExtension == "app" {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return root.appendingPathComponent(Bundle.main.bundleIdentifier ?? "local.timetable.wallpaper", isDirectory: true)
+    }
+    return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("output", isDirectory: true)
 }
 
-func backupURL(_ screen: NSScreen) -> URL { workspaceDirectory().appendingPathComponent("restore-\(screenID(screen)).json") }
+func stateDirectory() -> URL { workspaceDirectory().appendingPathComponent("state", isDirectory: true) }
+func recoveryDirectory() -> URL { workspaceDirectory().appendingPathComponent("recovery", isDirectory: true) }
+func wallpapersDirectory() -> URL { workspaceDirectory().appendingPathComponent("wallpapers", isDirectory: true) }
+func appliedDirectory() -> URL { wallpapersDirectory().appendingPathComponent("applied", isDirectory: true) }
+
+func ensureWorkspaceDirectories() throws {
+    for directory in [stateDirectory(), recoveryDirectory(), wallpapersDirectory(), appliedDirectory()] {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+}
+
+func legacyWorkspaceDirectory() -> URL {
+    if let override = ProcessInfo.processInfo.environment["TIMETABLE_LEGACY_WORKSPACE"], !override.isEmpty {
+        return URL(fileURLWithPath: override, isDirectory: true)
+    }
+    if Bundle.main.bundleURL.pathExtension == "app" { return Bundle.main.bundleURL.deletingLastPathComponent() }
+    return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("output", isDirectory: true)
+}
+
+private struct MigrationItem {
+    let source: URL
+    let destination: URL
+}
+
+func migrateLegacyWorkspace() throws {
+    try ensureWorkspaceDirectories()
+    let files = FileManager.default
+    let legacy = legacyWorkspaceDirectory()
+    guard legacy.standardizedFileURL != workspaceDirectory().standardizedFileURL,
+          files.fileExists(atPath: legacy.path) else { return }
+    var items = [
+        MigrationItem(source: legacy.appendingPathComponent("app-state.json"), destination: stateDirectory().appendingPathComponent("app-state.json")),
+        MigrationItem(source: legacy.appendingPathComponent("editor-wallpaper.heic"), destination: wallpapersDirectory().appendingPathComponent("editor-wallpaper.heic"))
+    ]
+    for url in try files.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil) {
+        let name = url.lastPathComponent
+        if name.hasPrefix("restore-") || name.hasPrefix("restored-") || name.hasPrefix("unavailable-") {
+            items.append(MigrationItem(source: url, destination: recoveryDirectory().appendingPathComponent(name)))
+        }
+    }
+    let legacyApplied = legacy.appendingPathComponent("applied", isDirectory: true)
+    if files.fileExists(atPath: legacyApplied.path) {
+        for url in try files.contentsOfDirectory(at: legacyApplied, includingPropertiesForKeys: nil) {
+            items.append(MigrationItem(source: url, destination: appliedDirectory().appendingPathComponent(url.lastPathComponent)))
+        }
+    }
+    let active = Set(NSScreen.screens.compactMap { NSWorkspace.shared.desktopImageURL(for: $0)?.standardizedFileURL.path })
+    var copied: [MigrationItem] = []
+    do {
+        for item in items where files.fileExists(atPath: item.source.path) && !files.fileExists(atPath: item.destination.path) {
+            try files.copyItem(at: item.source, to: item.destination)
+            copied.append(item)
+        }
+    } catch {
+        for item in copied { try? files.removeItem(at: item.destination) }
+        throw error
+    }
+    for item in copied where !active.contains(item.source.standardizedFileURL.path) {
+        try files.removeItem(at: item.source)
+    }
+    if let remaining = try? files.contentsOfDirectory(atPath: legacyApplied.path), remaining.isEmpty {
+        try? files.removeItem(at: legacyApplied)
+    }
+}
+
+private func trimFiles(in directory: URL, matching: (String) -> Bool, keeping limit: Int, protected: Set<String> = []) throws {
+    let files = FileManager.default
+    guard files.fileExists(atPath: directory.path) else { return }
+    let candidates = try files.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey])
+        .filter { matching($0.lastPathComponent) && !protected.contains($0.standardizedFileURL.path) }
+        .sorted {
+            let left = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let right = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return left > right
+        }
+    for url in candidates.dropFirst(limit) { try files.removeItem(at: url) }
+}
+
+func cleanupRuntimeFiles() throws {
+    try ensureWorkspaceDirectories()
+    let active = Set(NSScreen.screens.compactMap { NSWorkspace.shared.desktopImageURL(for: $0)?.standardizedFileURL.path })
+    try trimFiles(in: appliedDirectory(), matching: { $0.hasSuffix(".heic") }, keeping: 24, protected: active)
+    try trimFiles(in: recoveryDirectory(), matching: { $0.hasPrefix("restored-") || $0.hasPrefix("unavailable-") }, keeping: 20)
+}
+
+func resetInactiveRuntimeData() throws {
+    try ensureWorkspaceDirectories()
+    let files = FileManager.default
+    let active = Set(NSScreen.screens.compactMap { NSWorkspace.shared.desktopImageURL(for: $0)?.standardizedFileURL.path })
+    let state = stateDirectory().appendingPathComponent("app-state.json")
+    if files.fileExists(atPath: state.path) { try files.removeItem(at: state) }
+    for directory in [wallpapersDirectory(), appliedDirectory()] where files.fileExists(atPath: directory.path) {
+        for url in try files.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            where !url.hasDirectoryPath && !active.contains(url.standardizedFileURL.path) {
+            try files.removeItem(at: url)
+        }
+    }
+    for url in try files.contentsOfDirectory(at: recoveryDirectory(), includingPropertiesForKeys: nil)
+        where url.lastPathComponent.hasPrefix("restored-") || url.lastPathComponent.hasPrefix("unavailable-") {
+        try files.removeItem(at: url)
+    }
+}
+
+func backupURL(_ screen: NSScreen) -> URL { recoveryDirectory().appendingPathComponent("restore-\(screenID(screen)).json") }
 
 func applyWallpaper(_ url: URL, screen: NSScreen) throws -> Bool {
+    try ensureWorkspaceDirectories()
     let data = try readBounded(url)
     _ = try inspectData(data)
     let backup = backupURL(screen)
     if FileManager.default.fileExists(atPath: backup.path) {
         let previous = try JSONDecoder().decode(WallpaperBackup.self, from: Data(contentsOf: backup))
         if !previous.canRestore && WallpaperBackup(screen: screen).canRestore {
-            try FileManager.default.moveItem(at: backup, to: workspaceDirectory().appendingPathComponent("unavailable-\(UUID().uuidString).json"))
+            try FileManager.default.moveItem(at: backup, to: recoveryDirectory().appendingPathComponent("unavailable-\(UUID().uuidString).json"))
         }
     }
     if !FileManager.default.fileExists(atPath: backup.path) {
@@ -156,12 +266,12 @@ func applyWallpaper(_ url: URL, screen: NSScreen) throws -> Bool {
         try encoder.encode(WallpaperBackup(screen: screen)).write(to: backup, options: .atomic)
     }
     // A new filename prevents macOS reusing a cached render of the previous file.
-    let applied = workspaceDirectory().appendingPathComponent("applied")
-    try FileManager.default.createDirectory(at: applied, withIntermediateDirectories: true)
+    let applied = appliedDirectory()
     let copy = applied.appendingPathComponent("timetable-\(UUID().uuidString).heic")
     try data.write(to: copy, options: .atomic)
     try NSWorkspace.shared.setDesktopImageURL(copy, for: screen, options: [.imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue, .allowClipping: false])
     let record = try JSONDecoder().decode(WallpaperBackup.self, from: Data(contentsOf: backup))
+    try? cleanupRuntimeFiles()
     return record.canRestore
 }
 
@@ -180,8 +290,9 @@ func restoreWallpaper(screen: NSScreen) throws {
     guard NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL == original.standardizedFileURL else {
         throw WallpaperError.invalid("macOS did not confirm restoration. The recovery file was retained.")
     }
-    let archive = workspaceDirectory().appendingPathComponent("restored-\(UUID().uuidString).json")
+    let archive = recoveryDirectory().appendingPathComponent("restored-\(UUID().uuidString).json")
     try FileManager.default.moveItem(at: backup, to: archive)
+    try? cleanupRuntimeFiles()
 }
 
 final class WallpaperApp: NSObject, NSApplicationDelegate {

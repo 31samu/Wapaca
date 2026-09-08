@@ -1,6 +1,7 @@
 // Runs only in the bundled Mac editor. All calendar parsing stays local.
 if (window.webkit?.messageHandlers?.timetable) {
   const send=(type,body={})=>window.webkit.messageHandlers.timetable.postMessage({type,...body});
+  const nativeDefaults={...state,excludedEventIds:[]};
   const originalRender=render;
   render=function(){originalRender();if(result)send('settings',{editor:{...state}});};
   document.querySelectorAll('.note').forEach(p=>{
@@ -23,7 +24,7 @@ if (window.webkit?.messageHandlers?.timetable) {
     state.today=today;
     if(payload.ics){const parsed=parseCalendar(payload.ics,state.timeZone);Object.assign(data,parsed);}
     if(payload.fetchedAt)state.snapshotDate=localParts(payload.fetchedAt,state.timeZone).date;
-    if(payload.courseCode)config.course=payload.courseCode;
+    if(Object.hasOwn(payload,'courseCode'))config.course=payload.courseCode||'';
     for(const [id,key] of binds)$(id).value=state[key];
     $('show-title').checked=state.showTitle;$('rooms').checked=state.rooms;$('icon-space').checked=state.iconSpace;
     $('course').value=state.course?'course':'all';
@@ -33,6 +34,16 @@ if (window.webkit?.messageHandlers?.timetable) {
     $('snapshot').textContent='Calendar snapshot · '+state.snapshotDate;
     $('selection-note').textContent='Event choices stay saved after refresh. If TimeEdit replaces an event with a new ID, it appears as a new event.';
     render();
+  };
+  window.nativeReset=function(){
+    const today=localParts(new Date(),state.timeZone).date;
+    Object.assign(data,{name:'Calendar',events:[]});
+    Object.assign(state,nativeDefaults,{mode:'month',month:today.slice(0,7),name:'New module',start:today,end:dayAdd(today,34),proposed:false,course:'',excludedEventIds:[],today,snapshotDate:'none'});
+    config.course='';
+    for(const [id,key] of binds)$(id).value=state[key];
+    $('show-title').checked=state.showTitle;$('rooms').checked=state.rooms;$('icon-space').checked=state.iconSpace;$('course').value='all';
+    $('snapshot').textContent='No saved calendar';
+    render();return true;
   };
   window.nativeFeed=function(ics,fetchedAt){
     const parsed=parseCalendar(ics,state.timeZone);

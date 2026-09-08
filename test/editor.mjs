@@ -1,12 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
 import {JSDOM} from 'jsdom';
-const resources='output/Timetable Wallpaper.app/Contents/Resources/';
+import {loadFixtureApp} from './helpers/fixture-app.mjs';
 async function setup(){
  const messages=[];
- const dom=new JSDOM(await readFile(resources+'editor.html','utf8'),{runScripts:'dangerously',beforeParse(w){w.webkit={messageHandlers:{timetable:{postMessage:m=>messages.push(m)}}};}});
- const seed=JSON.parse(await readFile(resources+'seed.json','utf8'));
+ const {editor,seed}=await loadFixtureApp();
+ const dom=new JSDOM(editor,{runScripts:'dangerously',beforeParse(w){w.webkit={messageHandlers:{timetable:{postMessage:m=>messages.push(m)}}};}});
  dom.window.nativeLoad(seed);
  return {dom,seed,messages};
 }
@@ -18,8 +17,8 @@ test('native editor restores saved settings and exclusions, and preserves them a
   assert.equal(document.querySelector('.export-actions').hidden,false);
   assert.equal(document.getElementById('export-svg'),null);
   assert.equal(document.getElementById('export-heic').textContent,'Export HEIC');
-  assert.doesNotMatch(document.getElementById('wallpaper').innerHTML,/>Intersectionality &amp; norms<\/text>/);
- const checkbox=[...document.querySelectorAll('#event-list input')].find(el=>el.getAttribute('aria-label').includes('Final presentations'));
+  assert.doesNotMatch(document.getElementById('wallpaper').innerHTML,/>Prototype module<\/text>/);
+ const checkbox=[...document.querySelectorAll('#event-list input')].find(el=>el.getAttribute('aria-label').includes('Launch presentation'));
  checkbox.checked=false;checkbox.dispatchEvent(new Event('change'));
  const editor=messages.filter(m=>m.type==='settings').at(-1).editor;
  editor.name='Saved module';editor.showTitle=true;editor.rooms=false;editor.theme='dark';
@@ -30,7 +29,7 @@ test('native editor restores saved settings and exclusions, and preserves them a
  assert.equal(document.getElementById('rooms').checked,false);
  assert.equal(document.getElementById('theme').value,'dark');
  dom.window.nativeFeed(seed.ics,'2026-09-07T12:00:00Z');
- assert.doesNotMatch(document.getElementById('wallpaper').innerHTML,/Final presentations/);
+ assert.doesNotMatch(document.getElementById('wallpaper').innerHTML,/Launch presentation/);
  const before=document.getElementById('wallpaper').innerHTML;
  assert.throws(()=>dom.window.nativeFeed('invalid ICS','2026-09-08T12:00:00Z'));
  assert.equal(document.getElementById('wallpaper').innerHTML,before);
@@ -65,11 +64,11 @@ test('suggestions require an explicit choice and accept edited dates without cha
  d.getElementById('suggest-modules').click();
  assert.equal(d.querySelectorAll('#suggestion-list article').length,2);
  assert.equal(d.getElementById('module-name').value,before.name);
- d.getElementById('suggestion-0-name').value='My Worldbuilding module';
+ d.getElementById('suggestion-0-name').value='My foundations module';
  d.getElementById('suggestion-0-start').value='2026-08-31';
  d.querySelector('#suggestion-list button').click();
  const after=messages.filter(m=>m.type==='settings').at(-1).editor;
- assert.equal(after.name,'My Worldbuilding module');assert.equal(after.start,'2026-08-31');assert.equal(after.end,'2026-09-30');
+ assert.equal(after.name,'My foundations module');assert.equal(after.start,'2026-08-31');assert.equal(after.end,'2026-09-30');
  assert.deepEqual(after.excludedEventIds,before.excludedEventIds);
  assert.equal(d.getElementById('module-suggestions').hidden,true);
  dom.window.close();
@@ -108,4 +107,18 @@ test('wake and refresh advance a following month across year end, preserving his
   assert.equal(dom.window.nativeDay(),false);
   dom.window.close();
  }
+});
+
+test('reset clears the cached calendar and restores neutral editor defaults',async()=>{
+  const {dom,messages}=await setup();
+  assert.ok(dom.window.document.querySelectorAll('#event-list input').length>0);
+  assert.equal(dom.window.nativeReset(),true);
+  assert.equal(dom.window.document.querySelectorAll('#event-list input').length,0);
+  assert.equal(dom.window.document.getElementById('course').value,'all');
+  assert.equal(dom.window.document.getElementById('module-name').value,'New module');
+  assert.match(dom.window.document.getElementById('snapshot').textContent,/No saved calendar/);
+  const editor=messages.filter(message=>message.type==='settings').at(-1).editor;
+  assert.equal(editor.course,'');
+  assert.equal(editor.excludedEventIds.length,0);
+  dom.window.close();
 });

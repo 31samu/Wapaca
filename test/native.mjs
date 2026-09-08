@@ -1,14 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync,spawnSync} from 'node:child_process';
-import {readFile,writeFile,mkdtemp} from 'node:fs/promises';
+import {readFile,writeFile,mkdtemp,mkdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import sharp from 'sharp';
+import {renderWallpaper} from '../src/layout.mjs';
+import {loadFixtureApp} from './helpers/fixture-app.mjs';
 const binary=resolve('output/Timetable Wallpaper.app/Contents/MacOS/TimetableWallpaper');
 test('native export imports, validates both frames, and rejects invalid inputs without overwriting',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'timetable-heic-'));
- const pair={version:1,name:'Test',light:(await readFile('output/module-2026-10-05-light.png')).toString('base64'),dark:(await readFile('output/module-2026-10-05-dark.png')).toString('base64')};
+ const {data,config}=await loadFixtureApp();
+ const images={};
+ for(const theme of ['light','dark']){
+  images[theme]=join(dir,`${theme}.png`);
+  const rendered=renderWallpaper(data.events,{...config,...config.module,mode:'module',theme});
+  await sharp(Buffer.from(rendered.svg)).png().toFile(images[theme]);
+ }
+ const pair={version:1,name:'Test',light:(await readFile(images.light)).toString('base64'),dark:(await readFile(images.dark)).toString('base64')};
  const source=join(dir,'test.timetable'),output=join(dir,'test.heic');
  await writeFile(source,JSON.stringify(pair));
  const info=JSON.parse(execFileSync(binary,['import',source,output],{encoding:'utf8'}));
@@ -16,7 +25,7 @@ test('native export imports, validates both frames, and rejects invalid inputs w
  execFileSync(binary,['inspect',output,dir]);
  for(const theme of ['light','dark']){
   const actual=await sharp(join(dir,theme+'.png')).removeAlpha().raw().toBuffer();
-  const expected=await sharp('output/module-2026-10-05-'+theme+'.png').removeAlpha().raw().toBuffer();
+  const expected=await sharp(images[theme]).removeAlpha().raw().toBuffer();
   assert.equal(actual.length,expected.length);
   let error=0;for(let i=0;i<actual.length;i++)error+=Math.abs(actual[i]-expected[i]);
   assert.ok(error/actual.length<3,`${theme}: average channel error ${error/actual.length}`);
@@ -26,7 +35,7 @@ test('native export imports, validates both frames, and rejects invalid inputs w
  assert.notEqual(spawnSync(binary,['import',source,output]).status,0);
  assert.deepEqual(await readFile(output),original);
  const small=join(dir,'small.png');await sharp({create:{width:10,height:10,channels:3,background:'#fff'}}).png().toFile(small);
- const failed=spawnSync(binary,['encode',small,'output/module-2026-10-05-dark.png',output]);
+ const failed=spawnSync(binary,['encode',small,images.dark,output]);
  assert.notEqual(failed.status,0);assert.match(failed.stderr.toString(),/same dimensions/);
  assert.deepEqual(await readFile(output),original);
  assert.notEqual(spawnSync(binary,['inspect',small]).status,0);
@@ -69,4 +78,36 @@ assert(savedRefreshInterval(.infinity) == 3600)
 print("Cache policy checks passed")
 `);
  assert.match(execFileSync('swift',['-module-cache-path','/tmp/timetable-swift-cache',file],{encoding:'utf8'}),/checks passed/);
+});
+
+test('legacy runtime data migrates to app support and reset preserves active recovery records',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'timetable-storage-'));
+ const legacy=join(dir,'legacy'),support=join(dir,'support');
+ await mkdir(join(legacy,'applied'),{recursive:true});
+ await Promise.all([
+  writeFile(join(legacy,'app-state.json'),'{}'),
+  writeFile(join(legacy,'editor-wallpaper.heic'),'editor'),
+  writeFile(join(legacy,'restore-display.json'),'{}'),
+  writeFile(join(legacy,'restored-old.json'),'{}'),
+  writeFile(join(legacy,'applied','old.heic'),'wallpaper')
+ ]);
+ const source=(await readFile('native/Wallpaper.swift','utf8')).split('final class WallpaperApp:')[0];
+ const file=join(dir,'storage.swift');
+ await writeFile(file,source+`
+try migrateLegacyWorkspace()
+let files = FileManager.default
+assert(files.fileExists(atPath: stateDirectory().appendingPathComponent("app-state.json").path))
+assert(files.fileExists(atPath: recoveryDirectory().appendingPathComponent("restore-display.json").path))
+assert(files.fileExists(atPath: recoveryDirectory().appendingPathComponent("restored-old.json").path))
+assert(files.fileExists(atPath: appliedDirectory().appendingPathComponent("old.heic").path))
+assert(!files.fileExists(atPath: legacyWorkspaceDirectory().appendingPathComponent("app-state.json").path))
+try resetInactiveRuntimeData()
+assert(!files.fileExists(atPath: stateDirectory().appendingPathComponent("app-state.json").path))
+assert(files.fileExists(atPath: recoveryDirectory().appendingPathComponent("restore-display.json").path))
+assert(!files.fileExists(atPath: recoveryDirectory().appendingPathComponent("restored-old.json").path))
+assert(!files.fileExists(atPath: appliedDirectory().appendingPathComponent("old.heic").path))
+print("Storage migration checks passed")
+`);
+ const output=execFileSync('swift',['-module-cache-path','/tmp/timetable-swift-cache',file],{encoding:'utf8',env:{...process.env,TIMETABLE_APP_SUPPORT:support,TIMETABLE_LEGACY_WORKSPACE:legacy}});
+ assert.match(output,/checks passed/);
 });

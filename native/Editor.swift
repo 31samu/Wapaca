@@ -24,14 +24,17 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
     var fetching = false
     var rendering = false
     var rerender = false
+    var dataGeneration = 0
     var timer: Timer?
     var saveTimer: Timer?
     var session = URLSession(configuration: .ephemeral)
-    var stateURL: URL { workspaceDirectory().appendingPathComponent("app-state.json") }
+    var stateURL: URL { stateDirectory().appendingPathComponent("app-state.json") }
     var nextCheck: Date { Date(timeIntervalSince1970: saved["nextCheck"] as? Double ?? 0) }
     var refreshInterval: TimeInterval { savedRefreshInterval(saved["refreshInterval"] as? Double) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        do { try migrateLegacyWorkspace() }
+        catch { status.stringValue = "Could not migrate older app data. The original files were kept. \(error.localizedDescription)" }
         do {
             let seed = Bundle.main.url(forResource: "seed", withExtension: "json")!
             saved = try JSONSerialization.jsonObject(with: Data(contentsOf: FileManager.default.fileExists(atPath: stateURL.path) ? stateURL : seed)) as? [String:Any] ?? [:]
@@ -42,7 +45,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName:"calendar",accessibilityDescription:"Timetable Wallpaper")
         let tray = NSMenu()
-        for (title, action) in [("Open timetable", #selector(show)), ("Refresh calendar", #selector(refreshNow)), ("Open exported wallpaper…", #selector(openExport)), ("Apply wallpaper", #selector(applyNow)), ("Restore previous wallpaper", #selector(restore)), ("Quit", #selector(NSApplication.terminate(_:)))] {
+        for (title, action) in [("Open timetable", #selector(show)), ("Refresh calendar", #selector(refreshNow)), ("Open exported wallpaper…", #selector(openExport)), ("Apply wallpaper", #selector(applyNow)), ("Restore previous wallpaper", #selector(restore)), ("Reset application data…", #selector(resetData)), ("Quit", #selector(NSApplication.terminate(_:)))] {
             let entry = NSMenuItem(title: title, action: action, keyEquivalent: ""); entry.target = title == "Quit" ? NSApp : self; tray.addItem(entry)
         }
         item.menu = tray
@@ -64,6 +67,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
         controls.addArrangedSubview(screenPicker)
         controls.addArrangedSubview(NSButton(title:"Apply wallpaper",target:self,action:#selector(applyNow)))
         controls.addArrangedSubview(NSButton(title:"Restore previous",target:self,action:#selector(restore)))
+        controls.addArrangedSubview(NSButton(title:"Reset data…",target:self,action:#selector(resetData)))
         automatic.target = self; automatic.action = #selector(toggleUpdates); automatic.state = saved["autoApply"] as? Bool == true ? .on : .off
         controls.addArrangedSubview(automatic)
         login.target = self; login.action = #selector(toggleLogin); login.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -97,7 +101,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
     }
     @objc func show() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true) }
     func persist() {
-        do { try JSONSerialization.data(withJSONObject:saved,options:[.sortedKeys]).write(to:stateURL,options:.atomic) }
+        do { try ensureWorkspaceDirectories(); try JSONSerialization.data(withJSONObject:saved,options:[.sortedKeys]).write(to:stateURL,options:.atomic) }
         catch { status.stringValue = "Settings could not be saved. \(error.localizedDescription)" }
     }
     @objc func updateScreens() {
@@ -195,10 +199,12 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
         var request = URLRequest(url:url,cachePolicy:.reloadIgnoringLocalCacheData,timeoutInterval:30)
         request.setValue(saved["etag"] as? String,forHTTPHeaderField:"If-None-Match")
         request.setValue(saved["modified"] as? String,forHTTPHeaderField:"If-Modified-Since")
+        let generation = dataGeneration
         Task { @MainActor in
             defer { fetching = false }
             do {
                 let (data,response) = try await session.data(for:request)
+                guard generation == dataGeneration else { return }
                 guard let http = response as? HTTPURLResponse else { throw WallpaperError.invalid("The calendar server returned an invalid response.") }
                 guard http.statusCode == 200 || http.statusCode == 304 else { throw WallpaperError.invalid("Calendar check failed: HTTP \(http.statusCode).") }
                 let now = ISO8601DateFormatter().string(from:Date())
@@ -212,6 +218,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
                 saved["checkedAt"] = now; persist(); status.stringValue = "Calendar checked at \(Date().formatted(date:.omitted,time:.shortened))."
                 if automatic.state == .on { await makeAndApply(force:false) }
             } catch {
+                guard generation == dataGeneration else { return }
                 saved["nextCheck"] = Date().addingTimeInterval(300).timeIntervalSince1970; persist()
                 status.stringValue = "Refresh failed. Keeping the saved calendar and wallpaper. \(error.localizedDescription)"
             }
@@ -236,7 +243,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
         if !force && saved["lastHash"] as? String == digest && saved["screen"] as? String == screenID(screen) { return }
         let parsed = try JSONDecoder().decode(PairExport.self,from:data)
         guard let light = Data(base64Encoded:parsed.light),let dark = Data(base64Encoded:parsed.dark) else { throw WallpaperError.invalid("Could not render both appearances.") }
-        let file = workspaceDirectory().appendingPathComponent("editor-wallpaper.heic")
+        let file = wallpapersDirectory().appendingPathComponent("editor-wallpaper.heic")
         try encodePair(light:loadImage(light),dark:loadImage(dark),to:file)
         let restorable = try applyWallpaper(file,screen:screen)
         saved["screen"] = screenID(screen); saved["lastHash"] = digest; persist()
@@ -245,6 +252,34 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
     @objc func restore() {
         do { try restoreWallpaper(screen:targetScreen()); automatic.state = .off; saved["autoApply"] = false; saved.removeValue(forKey:"lastHash"); persist(); status.stringValue = "Previous wallpaper restored. Automatic updates paused." }
         catch { status.stringValue = error.localizedDescription }
+    }
+    @objc func resetData() {
+        let alert = NSAlert()
+        alert.messageText = "Reset Timetable Wallpaper data?"
+        alert.informativeText = "This removes the saved subscription, cached calendar, editor settings, and inactive generated wallpapers. Active wallpaper files and recovery records are kept so your desktop can still be restored."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Reset data")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            saveTimer?.invalidate()
+            dataGeneration += 1; fetching = false
+            session.invalidateAndCancel(); session = URLSession(configuration: .ephemeral)
+            try? SMAppService.mainApp.unregister()
+            automatic.state = .off; login.state = .off
+            try resetInactiveRuntimeData()
+            let emptyCalendar = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n"
+            saved = ["ics": emptyCalendar, "courseCode": "", "refreshInterval": 3600.0, "nextCheck": 0.0]
+            urlField.stringValue = ""
+            refreshPicker.selectItem(at: 2)
+            persist()
+            if ready {
+                Task { @MainActor in
+                    do { _ = try await js("return window.nativeReset()"); status.stringValue = "Application data reset. Active wallpaper recovery was kept." }
+                    catch { status.stringValue = "Data reset, but the editor could not refresh. Reopen the app. \(error.localizedDescription)" }
+                }
+            } else { status.stringValue = "Application data reset. Active wallpaper recovery was kept." }
+        } catch { status.stringValue = "Application data could not be reset. \(error.localizedDescription)" }
     }
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool { show(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool { false }
