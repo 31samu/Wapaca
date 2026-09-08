@@ -1,4 +1,4 @@
-import WebKit
+import AppKit
 import ServiceManagement
 import CryptoKit
 
@@ -7,11 +7,54 @@ func savedRefreshInterval(_ value: Double?) -> TimeInterval {
     return value.flatMap { choices.contains($0) ? $0 : nil } ?? 3600
 }
 
-final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate {
+func statusItemIcon() -> NSImage {
+    if let icon = NSImage(systemSymbolName: "calendar", accessibilityDescription: "Wapacal") {
+        icon.isTemplate = true
+        return icon
+    }
+    let icon = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+        NSColor.black.setStroke()
+        NSColor.black.setFill()
+        let outline = NSBezierPath(roundedRect: NSRect(x: 2.5, y: 2.5, width: 13, height: 12), xRadius: 2, yRadius: 2)
+        outline.lineWidth = 1.5
+        outline.stroke()
+        let divider = NSBezierPath()
+        divider.move(to: NSPoint(x: 3, y: 10.5))
+        divider.line(to: NSPoint(x: 15, y: 10.5))
+        divider.lineWidth = 1.5
+        divider.stroke()
+        for x in [6.0, 9.0, 12.0] {
+            NSBezierPath(ovalIn: NSRect(x: x - 0.75, y: 5.25, width: 1.5, height: 1.5)).fill()
+        }
+        return true
+    }
+    icon.isTemplate = true
+    return icon
+}
+
+// Both windows report the same operation result, including refresh failures.
+final class StatusLabel: NSTextField {
+    weak var mirror: NSTextField?
+    override var stringValue: String { didSet { mirror?.stringValue = stringValue } }
+}
+
+@MainActor final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     var window: NSWindow!
-    var web: WKWebView!
+    var settingsWindow: NSWindow!
+    let settingsTabs = NSTabView()
+    let settingsStatus = NSTextField(wrappingLabelWithString: "")
+    let engine = CalendarEngine()
+    let editorView = EditorViewController()
+    var previewRevision = -1
+    var exporting = false
+    var lastEditorError: String?
+    var pendingEdits = 0
+    var terminating = false
+    var stateReadable = true
+    var stateLoadError: String?
+    var workerStarted = false
     var item: NSStatusItem!
-    let status = NSTextField(wrappingLabelWithString: "Loading your calendar…")
+    let status = StatusLabel(wrappingLabelWithString: "Loading your calendar…")
     let urlField = NSTextField()
     let sourcePicker = NSPopUpButton()
     let sourceName = NSTextField()
@@ -31,6 +74,9 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
     var dataGeneration = 0
     var timer: Timer?
     var saveTimer: Timer?
+    var escapeMonitor: Any?
+    var statusItemClickMonitor: Any?
+    var statusMenuOpen = false
     var session = URLSession(configuration: .ephemeral)
     var stateURL: URL { stateDirectory().appendingPathComponent("app-state.json") }
     var nextCheck: Date { Date(timeIntervalSince1970: saved["nextCheck"] as? Double ?? 0) }
@@ -41,8 +87,9 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
         catch { status.stringValue = "Could not migrate older app data. The original files were kept. \(error.localizedDescription)" }
         do {
             let seed = Bundle.main.url(forResource: "seed", withExtension: "json")!
-            saved = try JSONSerialization.jsonObject(with: Data(contentsOf: FileManager.default.fileExists(atPath: stateURL.path) ? stateURL : seed)) as? [String:Any] ?? [:]
-        } catch { status.stringValue = "Could not load saved settings. \(error.localizedDescription)" }
+            guard let stored = try JSONSerialization.jsonObject(with: Data(contentsOf: FileManager.default.fileExists(atPath: stateURL.path) ? stateURL : seed)) as? [String:Any] else { throw WallpaperError.invalid("Expected a settings object.") }
+            saved = stored
+        } catch { stateReadable = false; stateLoadError = "Could not load saved settings. The original file was kept. \(error.localizedDescription)"; status.stringValue = stateLoadError! }
         if saved["subscriptions"] == nil {
             if let url = saved["subscriptionUrl"] as? String, !url.isEmpty {
                 var source: [String:Any] = ["id":"legacy", "name":"TimeEdit", "url":url, "kind":"auto", "legacyIds":true]
@@ -57,8 +104,16 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
         let appMenu = NSMenu(title: "Wapacal")
         let quit = NSMenuItem(title: "Quit Wapacal", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
+        let settings = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        settings.target = self; appMenu.addItem(settings); appMenu.addItem(.separator())
         appMenu.addItem(quit)
         appItem.submenu = appMenu
+
+        let fileItem = NSMenuItem(); fileItem.title = "File"
+        let fileMenu = NSMenu(title: "File")
+        let open = NSMenuItem(title: "Open wallpaper…", action: #selector(openExport), keyEquivalent: "o")
+        open.target = self; fileMenu.addItem(open)
+        fileItem.submenu = fileMenu; menu.addItem(fileItem)
 
         let editItem = NSMenuItem(); editItem.title = "Edit"
         let editMenu = NSMenu(title: "Edit")
@@ -81,68 +136,134 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
         close.target = self; windowMenu.addItem(close)
         windowItem.submenu = windowMenu; menu.addItem(windowItem)
         NSApp.mainMenu = menu
-        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName:"calendar",accessibilityDescription:"Wapacal")
+        item = NSStatusBar.system.statusItem(withLength: 20)
+        if let button = item.button {
+            button.image = statusItemIcon()
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleProportionallyDown
+            button.toolTip = "Wapacal"
+            button.setAccessibilityLabel("Wapacal")
+        }
         let tray = NSMenu()
-        for (title, action) in [("Open Wapacal", #selector(show)), ("Refresh calendar", #selector(refreshNow)), ("Open exported wallpaper…", #selector(openExport)), ("Apply wallpaper", #selector(applyNow)), ("Restore previous wallpaper", #selector(restore)), ("Reset application data…", #selector(resetData)), ("Quit", #selector(NSApplication.terminate(_:)))] {
+        for (title, action) in [("Open Wapacal", #selector(show)), ("Settings…", #selector(showSettings)), ("Refresh calendars", #selector(refreshNow)), ("Quit", #selector(NSApplication.terminate(_:)))] {
             let entry = NSMenuItem(title: title, action: action, keyEquivalent: ""); entry.target = title == "Quit" ? NSApp : self; tray.addItem(entry)
         }
+        tray.delegate = self
         item.menu = tray
-        window = NSWindow(contentRect: NSRect(x:0,y:0,width:1200,height:850),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
-        window.title = "Wapacal"; window.center(); window.isReleasedWhenClosed = false; window.minSize = NSSize(width:900,height:650); window.delegate = self
-        let root = NSStackView(); root.orientation = .vertical; root.spacing = 10; root.edgeInsets = NSEdgeInsets(top:12,left:12,bottom:12,right:12)
-        let source = NSStackView(); source.orientation = .horizontal
-        sourcePicker.target = self; sourcePicker.action = #selector(selectSource)
-        sourcePicker.widthAnchor.constraint(equalToConstant:160).isActive = true
-        sourceName.placeholderString = "Calendar name"
-        sourceName.widthAnchor.constraint(equalToConstant:130).isActive = true
-        urlField.placeholderString = "HTTPS calendar subscription URL"
-        source.addArrangedSubview(sourcePicker); source.addArrangedSubview(sourceName); source.addArrangedSubview(urlField)
-        source.addArrangedSubview(NSButton(title:"New calendar",target:self,action:#selector(addSource)))
-        source.addArrangedSubview(NSButton(title:"Remove",target:self,action:#selector(removeSource)))
-        reloadSources()
-        let frequency = NSStackView(); frequency.orientation = .horizontal
-        frequency.addArrangedSubview(NSTextField(labelWithString:"Refresh every"))
-        for (title, seconds) in [("15 minutes",900.0),("30 minutes",1800.0),("1 hour",3600.0),("3 hours",10800.0),("6 hours",21600.0),("12 hours",43200.0),("24 hours",86400.0)] {
-            refreshPicker.addItem(withTitle:title); refreshPicker.lastItem?.representedObject = seconds
+        statusItemClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self, weak tray] event in
+            guard let self, statusMenuOpen, let button = item.button, let window = button.window else { return event }
+            let buttonFrame = window.convertToScreen(button.convert(button.bounds, to: nil))
+            guard buttonFrame.contains(NSEvent.mouseLocation) else { return event }
+            tray?.cancelTracking()
+            return nil
         }
-        refreshPicker.selectItem(at: refreshPicker.itemArray.firstIndex(where:{($0.representedObject as? Double)==refreshInterval}) ?? 2)
-        refreshPicker.target = self; refreshPicker.action = #selector(changeRefreshInterval)
-        frequency.addArrangedSubview(refreshPicker)
-        saveSourceButton.target = self; saveSourceButton.action = #selector(saveSource)
-        source.addArrangedSubview(saveSourceButton)
-        root.addArrangedSubview(source); root.addArrangedSubview(frequency)
-        let controls = NSStackView(); controls.orientation = .horizontal; controls.spacing = 10
-        controls.addArrangedSubview(screenPicker)
-        controls.addArrangedSubview(NSButton(title:"Apply wallpaper",target:self,action:#selector(applyNow)))
-        controls.addArrangedSubview(NSButton(title:"Restore previous",target:self,action:#selector(restore)))
-        controls.addArrangedSubview(NSButton(title:"Reset data…",target:self,action:#selector(resetData)))
-        automatic.target = self; automatic.action = #selector(toggleUpdates); automatic.state = saved["autoApply"] as? Bool == true ? .on : .off
-        controls.addArrangedSubview(automatic)
-        login.target = self; login.action = #selector(toggleLogin); login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        controls.addArrangedSubview(login); root.addArrangedSubview(controls)
-        status.font = .systemFont(ofSize:12); root.addArrangedSubview(status)
-        let config = WKWebViewConfiguration(); config.userContentController.add(self,name:"wapacal")
-        web = WKWebView(frame:.zero,configuration:config); web.navigationDelegate = self
-        root.addArrangedSubview(web); window.contentView = root
-        for view in [source,frequency,controls,status,web!] { view.widthAnchor.constraint(equalTo:root.widthAnchor,constant:-24).isActive = true }
+        window = NSWindow(contentRect: NSRect(x:0,y:0,width:1200,height:850),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
+        window.title = "Wapacal"; window.center(); window.isReleasedWhenClosed = false; window.minSize = NSSize(width:1060,height:720); window.delegate = self
+        buildSettingsWindow()
+        let root = NSView()
+        let displayLabel = NSTextField(labelWithString: "Display")
+        displayLabel.textColor = .secondaryLabelColor
+        screenPicker.setAccessibilityLabel("Wallpaper display")
+        screenPicker.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let apply = NSButton(title: "Apply wallpaper", target: self, action: #selector(applyNow))
+        apply.bezelStyle = .rounded; apply.bezelColor = .controlAccentColor
+        let header = EditorViewController.stack([displayLabel, screenPicker, spacer,
+            NSButton(title: "Refresh", target: self, action: #selector(refreshNow)),
+            NSButton(title: "Settings…", target: self, action: #selector(showSettings)),
+            editorView.exportMenu, apply], vertical: false, spacing: 10)
+        header.distribution = .fill
+        status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor
+        status.maximumNumberOfLines = 2
+        for child in [header, editorView.view, status] { root.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
+        window.contentView = root
+        NSLayoutConstraint.activate([
+            header.heightAnchor.constraint(equalToConstant: 32),
+            header.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
+            header.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            header.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+            editorView.view.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
+            editorView.view.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
+            editorView.view.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
+            editorView.view.bottomAnchor.constraint(equalTo: status.topAnchor, constant: -10),
+            status.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            status.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+            status.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
+            status.heightAnchor.constraint(equalToConstant: 30)
+        ])
+        editorView.onChange = { [weak self] patch in
+            guard let self, ready else { return }
+            pendingEdits += 1
+            let generation = dataGeneration
+            Task { @MainActor in
+                defer { self.pendingEdits -= 1 }
+                guard generation == self.dataGeneration else { return }
+                do {
+                    _ = try await self.js("return window.nativeUpdate(patch)", ["patch":patch])
+                    if patch["mode"] as? String == "module", patch["proposed"] as? Bool == false { self.editorView.closeDetails() }
+                    self.scheduleEditorSave()
+                } catch { self.reportEditorError(error) }
+            }
+        }
+        editorView.onInclude = { [weak self] uid, included in
+            guard let self, ready else { return }
+            pendingEdits += 1
+            let generation = dataGeneration
+            Task { @MainActor in
+                defer { self.pendingEdits -= 1 }
+                guard generation == self.dataGeneration else { return }
+                do { _ = try await self.js("return window.nativeInclude(uid,included)", ["uid":uid,"included":included]); self.scheduleEditorSave() }
+                catch { self.reportEditorError(error) }
+            }
+        }
+        editorView.onExport = { [weak self] heic in self?.exportImage(heic:heic) }
+        engine.onFailure = { [weak self] error in
+            self?.ready = false; self?.workerStarted = false; self?.editorView.setReady(false); self?.reportEditorError(error)
+        }
         screenPicker.target = self; screenPicker.action = #selector(changeScreen)
         updateScreens()
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53, let window = self?.window, NSApp.keyWindow === window else { return event }
+            if window.firstResponder is NSTextView || window.firstResponder is NSTextField { window.makeFirstResponder(nil) }
+            else { self?.editorView.closeDetails() }
+            return nil
+        }
         NotificationCenter.default.addObserver(self,selector:#selector(updateScreens),name:NSApplication.didChangeScreenParametersNotification,object:nil)
         NSWorkspace.shared.notificationCenter.addObserver(self,selector:#selector(tick),name:NSWorkspace.didWakeNotification,object:nil)
-        let file = Bundle.main.url(forResource:"editor",withExtension:"html")!
-        web.loadFileURL(file,allowingReadAccessTo:file.deletingLastPathComponent())
-        timer = Timer.scheduledTimer(withTimeInterval:60,repeats:true) { [weak self] _ in self?.tick() }
+        Task { @MainActor in
+            do {
+                try await engine.start(); workerStarted = true
+                if let stateLoadError { throw WallpaperError.invalid(stateLoadError) }
+                _ = try await js("return window.nativeLoad(payload)", ["payload":saved])
+                ready = true; editorView.setReady(true); persist()
+                status.stringValue = "Saved calendar loaded. Your edits are saved automatically."
+                tick()
+            } catch { reportEditorError(error) }
+        }
+        timer = Timer.scheduledTimer(withTimeInterval:60,repeats:true) { [weak self] _ in MainActor.assumeIsolated { self?.tick() } }
         show()
         for file in pendingFiles { openExportFile(file) }; pendingFiles.removeAll()
     }
+    func menuWillOpen(_ menu: NSMenu) { statusMenuOpen = true }
+    func menuDidClose(_ menu: NSMenu) { statusMenuOpen = false }
     func getCompanion() -> WallpaperApp {
         if let companion { return companion }
-        let controller = WallpaperApp(); controller.applicationDidFinishLaunching(Notification(name:NSApplication.didFinishLaunchingNotification)); companion = controller
+        let controller = WallpaperApp()
+        controller.onError = { [weak self] error in self?.show(); self?.reportEditorError(error) }
+        companion = controller
         return controller
     }
-    @objc func openExport() { getCompanion().openFile() }
-    func openExportFile(_ path:String) { getCompanion().openURL(URL(fileURLWithPath:path)) }
+    @objc func openExport() {
+        let controller = getCompanion()
+        controller.openFile()
+        controller.window?.delegate = self
+    }
+    func openExportFile(_ path:String) {
+        let controller = getCompanion()
+        controller.openURL(URL(fileURLWithPath:path))
+        controller.window?.delegate = self
+    }
     func application(_ sender:NSApplication,openFiles filenames:[String]) {
         if window == nil { pendingFiles.append(contentsOf:filenames) }
         else { for file in filenames { openExportFile(file) } }
@@ -153,9 +274,95 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps:true)
     }
-    @objc func closeWindow() { window.performClose(nil) }
-    func windowWillClose(_ notification: Notification) { NSApp.setActivationPolicy(.accessory) }
+    @objc func closeWindow() { NSApp.keyWindow?.performClose(nil) }
+    func windowWillClose(_ notification: Notification) {
+        let closing = notification.object as? NSWindow
+        if ![window, settingsWindow, companion?.window].compactMap({ $0 }).contains(where: { $0 !== closing && $0.isVisible }) {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+    @objc func showSettings() {
+        window.makeFirstResponder(nil)
+        NSApp.setActivationPolicy(.regular)
+        settingsWindow.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    func buildSettingsWindow() {
+        settingsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 530),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        settingsWindow.title = "Wapacal Settings"; settingsWindow.center()
+        settingsWindow.isReleasedWhenClosed = false; settingsWindow.delegate = self
+        func note(_ text: String) -> NSTextField {
+            let label = NSTextField(wrappingLabelWithString: text)
+            label.font = .systemFont(ofSize: 12); label.textColor = .secondaryLabelColor
+            return label
+        }
+        func field(_ title: String, _ control: NSView) -> NSStackView {
+            control.setAccessibilityLabel(title)
+            let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 12, weight: .medium)
+            let row = EditorViewController.stack([label, control], spacing: 6)
+            control.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
+            return row
+        }
+        func tab(_ id: String, _ title: String, _ children: [NSView]) {
+            let content = NSView()
+            let stack = EditorViewController.stack(children, spacing: 18)
+            content.addSubview(stack); stack.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 22),
+                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 22),
+                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -22)
+            ])
+            for child in children { child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+            let item = NSTabViewItem(identifier: id); item.label = title; item.view = content
+            settingsTabs.addTabViewItem(item)
+        }
+        sourcePicker.target = self; sourcePicker.action = #selector(selectSource)
+        sourceName.placeholderString = "e.g. University"; urlField.placeholderString = "https://…"
+        sourceName.setAccessibilityLabel("Calendar name"); urlField.setAccessibilityLabel("Subscription URL")
+        let sourceRow = EditorViewController.stack([sourcePicker,
+            NSButton(title: "New calendar", target: self, action: #selector(addSource)),
+            NSButton(title: "Remove", target: self, action: #selector(removeSource))], vertical: false)
+        sourcePicker.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        sourcePicker.setAccessibilityLabel("Saved calendars")
+        saveSourceButton.target = self; saveSourceButton.action = #selector(saveSource)
+        let saveRow = EditorViewController.stack([saveSourceButton, NSView()], vertical: false)
+        tab("calendars", "Calendars", [note("Connect calendar subscriptions to keep your timetable up to date."),
+            sourceRow, field("Calendar name", sourceName), field("Subscription URL", urlField), saveRow])
+        for (title, seconds) in [("15 minutes",900.0),("30 minutes",1800.0),("1 hour",3600.0),("3 hours",10800.0),("6 hours",21600.0),("12 hours",43200.0),("24 hours",86400.0)] {
+            refreshPicker.addItem(withTitle: title); refreshPicker.lastItem?.representedObject = seconds
+        }
+        refreshPicker.selectItem(at: refreshPicker.itemArray.firstIndex(where: { ($0.representedObject as? Double) == refreshInterval }) ?? 2)
+        refreshPicker.target = self; refreshPicker.action = #selector(changeRefreshInterval)
+        automatic.title = "Automatically apply wallpaper changes"
+        automatic.target = self; automatic.action = #selector(toggleUpdates); automatic.state = saved["autoApply"] as? Bool == true ? .on : .off
+        login.target = self; login.action = #selector(toggleLogin); login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        let separator = NSBox(); separator.boxType = .separator
+        tab("general", "General", [field("Check calendars every", refreshPicker),
+            EditorViewController.stack([automatic, note("Updates the selected display when calendars or your edits change. Wapacal must be running."), login], spacing: 10),
+            separator,
+            EditorViewController.stack([NSButton(title: "Restore previous wallpaper", target: self, action: #selector(restore)),
+                note("Restores the display selected in the main window and pauses automatic updates."),
+                NSButton(title: "Reset application data…", target: self, action: #selector(resetData))], spacing: 12)])
+        let root = NSView(); settingsWindow.contentView = root
+        settingsStatus.font = .systemFont(ofSize: 12); settingsStatus.textColor = .secondaryLabelColor
+        settingsStatus.maximumNumberOfLines = 4
+        status.mirror = settingsStatus; settingsStatus.stringValue = status.stringValue
+        for child in [settingsTabs, settingsStatus] { root.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([
+            settingsTabs.topAnchor.constraint(equalTo: root.topAnchor, constant: 20),
+            settingsTabs.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            settingsTabs.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+            settingsTabs.bottomAnchor.constraint(equalTo: settingsStatus.topAnchor, constant: -16),
+            settingsStatus.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
+            settingsStatus.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -28),
+            settingsStatus.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
+            settingsStatus.heightAnchor.constraint(equalToConstant: 64)
+        ])
+        reloadSources()
+    }
     func persist() {
+        guard stateReadable else { return }
         do { try ensureWorkspaceDirectories(); try JSONSerialization.data(withJSONObject:saved,options:[.sortedKeys]).write(to:stateURL,options:.atomic) }
         catch { status.stringValue = "Settings could not be saved. \(error.localizedDescription)" }
     }
@@ -182,44 +389,74 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
         guard let id = screenPicker.selectedItem?.representedObject as? String, let screen = NSScreen.screens.first(where:{screenID($0)==id}) else { throw WallpaperError.invalid("Choose a connected display.") }
         return screen
     }
-    func js(_ body:String, _ arguments:[String:Any] = [:]) async throws -> Any {
-        try await web.callAsyncJavaScript(body,arguments:arguments,in:nil,contentWorld:.page) ?? NSNull()
-    }
-    func userContentController(_ controller:WKUserContentController,didReceive message:WKScriptMessage) {
-        guard message.frameInfo.isMainFrame, let body = message.body as? [String:Any], let type = body["type"] as? String else { return }
-        switch type {
-        case "ready":
-            Task { @MainActor in
-                do { _ = try await js("window.nativeLoad(payload); return true",["payload":saved]); ready = true; status.stringValue = "Saved calendar loaded. Your edits are saved automatically."; tick() }
-                catch { status.stringValue = "Could not load the calendar. \(error.localizedDescription)" }
-            }
-        case "settings":
-            guard let editor = body["editor"] as? [String:Any] else { return }
+    func js(_ body:String, _ arguments:[String:Any] = [:], updates: Bool = true) async throws -> Any {
+        let generation = dataGeneration
+        let script = updates ? """
+            const value = await (async () => { \(body) })();
+            if (value === false) return {value};
+            const snapshot = window.nativeSnapshot();
+            delete snapshot.svg;
+            // Preview failures never discard a successfully parsed feed or saved edits.
+            try { snapshot.image = (await window.nativePNG()).png; }
+            catch (error) { snapshot.imageError = error.message; }
+            return {value, snapshot};
+            """ : body
+        let response = try await engine.call(script, arguments)
+        guard generation == dataGeneration else { throw WallpaperError.invalid("Application data changed during the operation.") }
+        guard updates, let envelope = response as? [String:Any] else { return response }
+        if let snapshot = envelope["snapshot"] as? [String:Any], let editor = snapshot["editor"] as? [String:Any],
+           let revision = snapshot["revision"] as? Int, revision >= previewRevision {
+            previewRevision = revision
             saved["editor"] = editor
-            saveTimer?.invalidate(); saveTimer = Timer.scheduledTimer(withTimeInterval:0.4,repeats:false) { [weak self] _ in self?.persist(); if self?.ready == true && self?.automatic.state == .on { Task { @MainActor in await self?.makeAndApply(force:false) } } }
-        case "apply":
-            guard let pair = body["pair"] as? [String:Any] else { return }
-            Task { @MainActor in do { try install(pair,force:true) } catch { status.stringValue = error.localizedDescription } }
-        case "export":
-            guard let ext = body["extension"] as? String, ext == "png", let encoded = body["base64"] as? String, let bytes = Data(base64Encoded:encoded) else { return }
-            let panel = NSSavePanel(); panel.nameFieldStringValue = "wapacal.\(ext)"
-            if panel.runModal() == .OK, let url = panel.url { do { try bytes.write(to:url,options:.atomic); status.stringValue = "Export saved." } catch { status.stringValue = error.localizedDescription } }
-        case "exportHeic":
-            guard let pair = body["pair"] as? [String:Any] else { return }
-            let panel = NSSavePanel(); panel.allowedContentTypes = [.heic]; panel.nameFieldStringValue = "wapacal.heic"
-            guard panel.runModal() == .OK, let url = panel.url else { return }
-            do {
-                let data = try JSONSerialization.data(withJSONObject:pair)
-                let parsed = try JSONDecoder().decode(PairExport.self,from:data)
-                guard let light = Data(base64Encoded:parsed.light), let dark = Data(base64Encoded:parsed.dark) else { throw WallpaperError.invalid("Could not render both appearances.") }
-                try encodePair(light:loadImage(light),dark:loadImage(dark),to:url)
-                status.stringValue = "HEIC saved with light and dark appearances."
-            } catch { status.stringValue = "HEIC export failed. \(error.localizedDescription)" }
-        default: break
+            editorView.display(snapshot)
+            if let encoded = snapshot["image"] as? String, let bytes = Data(base64Encoded:encoded), let image = NSImage(data:bytes) {
+                editorView.preview.image = image
+                lastEditorError = nil; editorView.showError("")
+            } else { reportEditorError(WallpaperError.invalid(snapshot["imageError"] as? String ?? "Could not display the wallpaper preview.")) }
+        }
+        return envelope["value"] ?? NSNull()
+    }
+    func reportEditorError(_ error: Error) {
+        let detail = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String ?? error.localizedDescription
+        lastEditorError = detail
+        editorView.showError(detail)
+        status.stringValue = detail
+    }
+    func scheduleEditorSave() {
+        saveTimer?.invalidate()
+        saveTimer = Timer.scheduledTimer(withTimeInterval:0.4,repeats:false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.persist()
+                if self?.ready == true && self?.automatic.state == .on {
+                    Task { @MainActor in await self?.makeAndApply(force:false) }
+                }
+            }
         }
     }
-    func webView(_ webView:WKWebView,decidePolicyFor navigationAction:WKNavigationAction,decisionHandler:@escaping(WKNavigationActionPolicy)->Void) {
-        decisionHandler(navigationAction.request.url?.standardizedFileURL == Bundle.main.url(forResource:"editor",withExtension:"html")?.standardizedFileURL ? .allow : .cancel)
+    func exportImage(heic: Bool) {
+        guard ready, !exporting else { return }
+        exporting = true
+        editorView.exportMenu.isEnabled = false
+        Task { @MainActor in
+            defer { exporting = false; editorView.exportMenu.isEnabled = ready }
+            do {
+                while pendingEdits > 0 { try await Task.sleep(nanoseconds:50_000_000) }
+                guard lastEditorError == nil else { return }
+                let rendered = try await js(heic ? "return await window.nativePair()" : "return await window.nativePNG()", updates:false) as? [String:Any] ?? [:]
+                let panel = NSSavePanel(); panel.allowedContentTypes = heic ? [.heic] : [.png]
+                panel.nameFieldStringValue = heic ? "wapacal.heic" : "wapacal.png"
+                guard await panel.beginSheetModal(for:window) == .OK, let url = panel.url else { return }
+                if heic {
+                    let parsed = try JSONDecoder().decode(PairExport.self, from: JSONSerialization.data(withJSONObject:rendered))
+                    guard let light = Data(base64Encoded:parsed.light), let dark = Data(base64Encoded:parsed.dark) else { throw WallpaperError.invalid("Could not render both appearances.") }
+                    try encodePair(light:loadImage(light),dark:loadImage(dark),to:url)
+                } else {
+                    guard let png = rendered["png"] as? String, let bytes = Data(base64Encoded:png) else { throw WallpaperError.invalid("Could not render the PNG.") }
+                    try bytes.write(to:url,options:.atomic)
+                }
+                status.stringValue = heic ? "HEIC saved with light and dark appearances." : "PNG saved."
+            } catch { reportEditorError(error) }
+        }
     }
     var subscriptions: [[String:Any]] { saved["subscriptions"] as? [[String:Any]] ?? [] }
     func reloadSources(selected: String? = nil) {
@@ -253,7 +490,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
             sourcePicker.select(nil)
         }
         saveSourceButton.title = "Add & refresh"
-        window.makeFirstResponder(urlField)
+        settingsWindow.makeFirstResponder(urlField)
         status.stringValue = "Enter a name and subscription URL, then choose Add & refresh."
     }
     @objc func removeSource() {
@@ -294,7 +531,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
         }
         persist(); reloadSources(selected:source["id"] as? String)
         Task { @MainActor in
-            do { _ = try await js("window.nativeLoad(payload); return true",["payload":saved]); refreshNow() }
+            do { _ = try await js("return window.nativeSources(subscriptions,clearCourse)",["subscriptions":sources,"clearCourse":adding]); persist(); refreshNow() }
             catch { status.stringValue = "Could not load subscriptions. \(error.localizedDescription)" }
         }
     }
@@ -309,7 +546,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
     @objc func tick() {
         guard ready else { return }
         Task { @MainActor in
-            do { let changed = try await js("return window.nativeDay()"); if changed as? Bool == true && automatic.state == .on { applyNow() } } catch { status.stringValue = error.localizedDescription }
+            do { let changed = try await js("return window.nativeDay()"); if changed as? Bool == true { persist(); if automatic.state == .on { applyNow() } } } catch { status.stringValue = error.localizedDescription }
         }
         if nextCheck <= Date() { beginRefresh(force:false) }
     }
@@ -365,16 +602,17 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
             status.stringValue = refreshFailure ?? "\(sources.count) calendars checked at \(Date().formatted(date:.omitted,time:.shortened))."
         }
     }
-    @objc func applyNow() { Task { @MainActor in await makeAndApply(force:true) } }
+    @objc func applyNow() { window?.makeFirstResponder(nil); Task { @MainActor in await makeAndApply(force:true) } }
     func makeAndApply(force:Bool) async {
-        guard ready else { return }
+        while pendingEdits > 0 { try? await Task.sleep(nanoseconds:50_000_000) }
+        guard ready, lastEditorError == nil else { return }
         if rendering { rerender = true; return }
         rendering = true
         defer {
             rendering = false
             if rerender { rerender = false; Task { @MainActor in await makeAndApply(force:false) } }
         }
-        do { guard let pair = try await js("return await window.nativePair()") as? [String:Any] else { throw WallpaperError.invalid("Could not render the wallpaper.") }; try install(pair,force:force) }
+        do { guard let pair = try await js("return await window.nativePair()", updates:false) as? [String:Any] else { throw WallpaperError.invalid("Could not render the wallpaper.") }; try install(pair,force:force) }
         catch { status.stringValue = "Wallpaper kept. \(error.localizedDescription)" }
     }
     func install(_ pair:[String:Any],force:Bool) throws {
@@ -391,6 +629,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
         status.stringValue = refreshFailure ?? (restorable ? "Wallpaper applied. macOS switches between light and dark." : "Wallpaper applied. The previous wallpaper file is unavailable for restoration.")
     }
     @objc func restore() {
+        guard !rendering else { status.stringValue = "Wait for the current wallpaper operation to finish."; return }
         do { try restoreWallpaper(screen:targetScreen()); automatic.state = .off; saved["autoApply"] = false; saved.removeValue(forKey:"lastHash"); persist(); status.stringValue = "Previous wallpaper restored. Automatic updates paused." }
         catch { status.stringValue = error.localizedDescription }
     }
@@ -409,19 +648,32 @@ final class EditorApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScri
             try? SMAppService.mainApp.unregister()
             automatic.state = .off; login.state = .off
             try resetInactiveRuntimeData()
+            stateReadable = true; stateLoadError = nil
             saved = ["subscriptions": [] as [[String:Any]], "courseCode": "", "refreshInterval": 3600.0, "nextCheck": 0.0]
             reloadSources()
             refreshPicker.selectItem(at: 2)
             persist()
-            if ready {
+            if workerStarted {
                 Task { @MainActor in
-                    do { _ = try await js("return window.nativeReset()"); status.stringValue = "Application data reset. Active wallpaper recovery was kept." }
+                    do { _ = try await js("return window.nativeReset()"); ready = true; editorView.setReady(true); persist(); status.stringValue = "Application data reset. Active wallpaper recovery was kept." }
                     catch { status.stringValue = "Data reset, but the editor could not refresh. Reopen the app. \(error.localizedDescription)" }
                 }
-            } else { status.stringValue = "Application data reset. Active wallpaper recovery was kept." }
+            } else { status.stringValue = "Application data reset. Active wallpaper recovery was kept. Reopen Wapacal to start the editor." }
         } catch { status.stringValue = "Application data could not be reset. \(error.localizedDescription)" }
     }
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool { show(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool { false }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        window?.makeFirstResponder(nil)
+        guard pendingEdits > 0 else { persist(); return .terminateNow }
+        if !terminating {
+            terminating = true
+            Task { @MainActor in
+                while pendingEdits > 0 { try? await Task.sleep(nanoseconds:50_000_000) }
+                persist(); sender.reply(toApplicationShouldTerminate:true)
+            }
+        }
+        return .terminateLater
+    }
     func applicationWillTerminate(_ notification:Notification) { persist() }
 }

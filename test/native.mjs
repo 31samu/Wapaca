@@ -1,13 +1,55 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync,spawnSync} from 'node:child_process';
-import {readFile,writeFile,mkdtemp,mkdir} from 'node:fs/promises';
+import {readFile,writeFile,mkdtemp,mkdir,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import sharp from 'sharp';
 import {renderWallpaper} from '../src/layout.mjs';
 import {loadFixtureApp} from './helpers/fixture-app.mjs';
 const binary=resolve('output/Wapacal.app/Contents/MacOS/Wapacal');
+const bundle=resolve('output/Wapacal.app');
+
+test('native bundle ships only a headless worker, with no browser interface',async()=>{
+ const resources=await readdir(join(bundle,'Contents','Resources'));
+ assert.ok(resources.includes('calendar-worker.html'));
+ assert.ok(!resources.includes('editor.html'));
+ assert.ok(!resources.includes('preview.html'));
+ const worker=await readFile(join(bundle,'Contents','Resources','calendar-worker.html'),'utf8');
+ assert.match(worker,/connect-src 'none'/);
+ assert.match(worker,/<body><script>/);
+ assert.doesNotMatch(worker,/webkit\.messageHandlers|localStorage|addEventListener/);
+});
+
+test('native bundle contains a rounded app icon at every macOS scale',async()=>{
+ const plist=await readFile(join(bundle,'Contents','Info.plist'),'utf8');
+ assert.match(plist,/<key>CFBundleIconFile<\/key><string>Wapacal\.icns<\/string>/);
+ const icon=await readFile(join(bundle,'Contents','Resources','Wapacal.icns'));
+ assert.equal(icon.subarray(0,4).toString(),'icns');
+ assert.equal(icon.readUInt32BE(4),icon.length);
+ const entries=new Map();
+ for(let offset=8;offset<icon.length;){
+  const type=icon.subarray(offset,offset+4).toString();
+  const length=icon.readUInt32BE(offset+4);
+  assert.ok(length>8,`${type} has an invalid chunk length`);
+  entries.set(type,icon.subarray(offset+8,offset+length));
+  offset+=length;
+  assert.ok(offset<=icon.length,`${type} extends past the ICNS file`);
+ }
+ const expected=new Map([['icp4',16],['icp5',32],['icp6',64],['ic07',128],['ic08',256],['ic09',512],['ic10',1024]]);
+ assert.deepEqual(new Set(entries.keys()),new Set(expected.keys()));
+ for(const [type,size] of expected){
+  const metadata=await sharp(entries.get(type)).metadata();
+  assert.equal(metadata.width,size,type);
+  assert.equal(metadata.height,size,type);
+  assert.equal(metadata.hasAlpha,true,type);
+ }
+ const {data,info}=await sharp(entries.get('ic10')).ensureAlpha().raw().toBuffer({resolveWithObject:true});
+ const alpha=(x,y)=>data[(y*info.width+x)*info.channels+3];
+ assert.equal(alpha(0,0),0,'the icon must not have opaque square corners');
+ assert.equal(alpha(512,512),255,'the center artwork must remain opaque');
+});
+
 test('native export imports, validates both frames, and rejects invalid inputs without overwriting',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'wapacal-heic-'));
  const {data,config}=await loadFixtureApp();
@@ -64,7 +106,7 @@ print("Backup regression checks passed")
 
 test('refresh frequency accepts only the choices shown in the app',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'wapacal-cache-'));
- const policy=(await readFile('native/Editor.swift','utf8')).split('final class EditorApp:')[0];
+ const policy=(await readFile('native/Editor.swift','utf8')).split('@MainActor final class EditorApp:')[0];
  const file=join(dir,'policy.swift');
  await writeFile(file,'import Foundation\n'+policy+`
 assert(savedRefreshInterval(nil) == 3600)

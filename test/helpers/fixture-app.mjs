@@ -25,7 +25,7 @@ export function loadFixtureApp(){
     const preview=template.replace('/*__LAYOUT__*/',()=>layout+'\n'+suggestions)
       .replace('/*__DATA__*/',()=>scriptJson(data)).replace('/*__CONFIG__*/',()=>scriptJson(config));
     const parser=(await readFile('src/calendar.mjs','utf8')).replace(/^import .*$/gm,'').replace(/^export /gm,'');
-    const editor=preview.replace('</body>',()=>`<script>${engine}\n${parser}\n${nativeEditor}</script></body>`);
+    const editor=`<!doctype html><html><body><script>${engine}\n${parser}\n${layout}\n${suggestions}\nconst config=${scriptJson(config)};\n${nativeEditor}</script></body></html>`;
     const seed={subscriptionUrl:'',courseCode:config.course,ics,fetchedAt:metadata.fetchedAt};
     return {config,data,editor,ics,preview,seed};
   })();

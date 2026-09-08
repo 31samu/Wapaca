@@ -11,7 +11,9 @@
     "test:preview": "node --test test/preview.mjs",
     "refresh": "node scripts/fetch.mjs",
     "test:native": "node --test test/native.mjs",
-    "test:editor": "node --test test/editor.mjs"
+    "test:editor": "node --test test/editor.mjs",
+    "test:native-ui": "node --test test/native-ui.mjs",
+    "test:all": "node --test test/*.mjs"
   },
   "engines": {
     "node": ">=22"

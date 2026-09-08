@@ -2,9 +2,16 @@
 
 Research started on 6 September 2026. Target: a local macOS calendar-to-wallpaper app.
 
-The working prototype now includes the calendar parser, shared SVG renderer, browser preview, native AppKit editor, menu bar controls, scheduled calendar refresh, paired HEIC generation, wallpaper apply/restore, editable module suggestions, and launch-at-login support. Node and Sharp remain development tools; the built app runs with bundled JavaScript in WKWebView and native macOS frameworks.
+The working prototype now includes the calendar parser, shared SVG renderer, browser preview, native AppKit interface, menu bar controls, scheduled calendar refresh, paired HEIC generation, wallpaper apply/restore, editable module suggestions, and launch-at-login support. Node and Sharp remain development tools; the built app runs with bundled JavaScript in WKWebView and native macOS frameworks.
 
 The repository has also completed its first privacy and storage cleanup. Automated integration tests use fictional fixtures instead of the developer's calendar. Mutable app data lives in Application Support, older beside-the-app data migrates on first launch, generated history is bounded, and the app has a confirmed reset action. Public release packaging is deliberately deferred while the product is still changing.
+
+
+## Native interface migration, 8 September 2026
+
+The application now presents only AppKit views. Layout controls, date pickers, event selection and full details, suggestions, previews, and export sheets are native. A detached private WebKit worker retains the shared parser and wallpaper renderer; it is never installed in a window. The browser preview remains a separate development tool and is absent from the app bundle.
+
+Existing state keys, event IDs, subscriptions, refresh behavior, wallpaper recovery, HEIC mapping, legacy imports, and CLI commands remain compatible. Native integration tests use fictional data in a temporary app and verify that no WebKit view appears in any tab. See [native interface architecture](docs/native-interface.md) for the current design and [README.md](README.md) for current usage. The earlier prototype descriptions below are historical.
 
 ## Recommendation
 

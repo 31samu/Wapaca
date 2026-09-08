@@ -170,6 +170,8 @@ private struct MigrationItem {
 }
 
 func previousApplicationSupportDirectory() -> URL? {
+    // An explicit workspace override is an isolated runtime, including migrations.
+    if ProcessInfo.processInfo.environment["WAPACAL_APP_SUPPORT"] != nil { return nil }
     guard Bundle.main.bundleURL.pathExtension == "app" else { return nil }
     let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     return root.appendingPathComponent("local.timetable.wallpaper", isDirectory: true)
@@ -303,7 +305,8 @@ func restoreWallpaper(screen: NSScreen) throws {
 
 final class WallpaperApp: NSObject, NSApplicationDelegate {
     var window: NSWindow!
-    let status = NSTextField(wrappingLabelWithString: "Open a paired HEIC or a .wapacal export from the preview.")
+    let status = NSTextField(wrappingLabelWithString: "")
+    var onError: ((Error) -> Void)?
     let picker = NSPopUpButton(frame: .zero)
     let lightView = NSImageView(); let darkView = NSImageView()
     var applyButton: NSButton!
@@ -315,11 +318,17 @@ final class WallpaperApp: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         let menu = NSMenu(); let appItem = NSMenuItem(); menu.addItem(appItem)
         let submenu = NSMenu(); submenu.addItem(withTitle: "Quit Wapacal", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = submenu; NSApp.mainMenu = menu
+        if pendingFiles.isEmpty { openFile() }
+        else { for url in pendingFiles { openURL(url) }; pendingFiles.removeAll() }
+    }
+
+    private func buildWindow() {
+        guard window == nil else { return }
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 510), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Wapacal"; window.center(); window.isReleasedWhenClosed = false
         let root = NSStackView(); root.orientation = .vertical; root.alignment = .leading; root.spacing = 18
         root.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
-        let title = NSTextField(labelWithString: "One wallpaper. Two appearances."); title.font = .systemFont(ofSize: 24, weight: .medium)
+        let title = NSTextField(labelWithString: "Wallpaper preview"); title.font = .systemFont(ofSize: 24, weight: .medium)
         root.addArrangedSubview(title)
         let previews = NSStackView(); previews.orientation = .horizontal; previews.spacing = 16
         for (label, view) in [("Light", lightView), ("Dark", darkView)] {
@@ -338,8 +347,7 @@ final class WallpaperApp: NSObject, NSApplicationDelegate {
         status.font = .systemFont(ofSize: 12); root.addArrangedSubview(status)
         window.contentView = root
         NotificationCenter.default.addObserver(self, selector: #selector(updateScreens), name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        updateScreens(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
-        for url in pendingFiles { openURL(url) }; pendingFiles.removeAll()
+        updateScreens()
     }
 
     @objc func updateScreens() {
@@ -353,7 +361,11 @@ final class WallpaperApp: NSObject, NSApplicationDelegate {
         guard let id = picker.selectedItem?.representedObject as? String, let screen = NSScreen.screens.first(where: {screenID($0) == id}) else { throw WallpaperError.invalid("The selected display is disconnected.") }
         return screen
     }
-    func showError(_ error: Error) { status.stringValue = error.localizedDescription }
+    func showError(_ error: Error) {
+        status.stringValue = error.localizedDescription
+        if let onError { onError(error) }
+        else { NSAlert(error: error).runModal() }
+    }
 
     @objc func openFile() {
         let panel = NSOpenPanel(); panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
@@ -377,10 +389,18 @@ final class WallpaperApp: NSObject, NSApplicationDelegate {
             }
             let data = try readBounded(wallpaper); let info = try inspectData(data)
             let source = CGImageSourceCreateWithData(data as CFData, nil)!
-            lightView.image = NSImage(cgImage: CGImageSourceCreateImageAtIndex(source, 0, nil)!, size: .zero)
-            darkView.image = NSImage(cgImage: CGImageSourceCreateImageAtIndex(source, 1, nil)!, size: .zero)
+            guard let light = CGImageSourceCreateImageAtIndex(source, 0, nil),
+                  let dark = CGImageSourceCreateImageAtIndex(source, 1, nil) else {
+                throw WallpaperError.invalid("Could not read wallpaper previews.")
+            }
+            buildWindow()
+            lightView.image = NSImage(cgImage: light, size: .zero)
+            darkView.image = NSImage(cgImage: dark, size: .zero)
             selected = wallpaper; applyButton.isEnabled = !screens.isEmpty
             status.stringValue = "\(wallpaper.lastPathComponent) · \(info.width) × \(info.height) · Verified light/dark pair."
+            window.title = wallpaper.lastPathComponent
+            NSApp.setActivationPolicy(.regular)
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         } catch { showError(error) }
     }
     @objc func apply() {
