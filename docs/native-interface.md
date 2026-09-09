@@ -14,6 +14,7 @@ The menu bar item offers Open Wapacal, Settings, Refresh calendars, and Quit. Fi
 
 | Component | Responsibility |
 | --- | --- |
+| `native/main.swift` | App startup and command-line dispatch |
 | `native/EditorView.swift` | AppKit presentation, native input, date pickers, event inclusion controls, full event details, suggestion drafts, image preview |
 | `native/Editor.swift` | Application lifecycle, Settings window, subscriptions and URLSession, persistence, command sequencing, refresh and automatic application, native export sheets |
 | `native/CalendarEngine.swift` | Serialized calls to the private worker, load and operation timeouts, navigation restriction, worker failure reporting |
@@ -23,7 +24,7 @@ The menu bar item offers Open Wapacal, Settings, Refresh calendars, and Quit. Fi
 
 ## Data flow
 
-1. AppKit loads `app-state.json`, falling back to the development seed only when that file does not exist. Existing legacy workspace and single-subscription migration runs as before. An unreadable state file is retained and writes are disabled until an explicit reset.
+1. AppKit loads `app-state.json`, falling back to the bundled seed only when that file does not exist. Existing legacy workspace and single-subscription migration runs as before. An unreadable state file is retained and writes are disabled until an explicit reset.
 2. Swift passes cached subscriptions and editor settings to the worker as structured JavaScript arguments. Strings are never interpolated into executable code. The worker validates the selected layout before committing a replacement.
 3. A native control submits a settings patch or an event ID and inclusion flag. A successful transaction returns editor settings, visible event candidates, warnings, suggestions, and PNG bytes. Swift displays these using AppKit and saves the settings dictionary atomically.
 4. URLSession fetches each feed independently. A rejected feed keeps its prior snapshot; valid feeds can still update. Subscription changes use the worker's current editor state, so they cannot overwrite queued edits with an older settings copy.
@@ -44,7 +45,9 @@ The browser preview remains a separate development and compatibility tool. It is
 
 ## Verification
 
-`npm run build:native` compiles and signs the app without requiring a generated browser preview. `npm run test:all` runs parser, layout, subscriptions, browser compatibility, worker, HEIC/storage, and native UI integration tests.
+`scripts/native-compile.mjs` compiles the production Swift files together with an explicit `main.swift` entry point. The app and native tests use this same compiler helper; neither extracts or replaces Swift source text.
+
+`npm run build:native` compiles and signs the app with empty subscriptions and a current-month view, without reading local configuration or calendar snapshots. `npm run build:native:private` explicitly embeds local configuration and snapshots for development. Neither command requires a generated browser preview. `npm run test:all` runs parser, layout, subscriptions, browser compatibility, worker, HEIC/storage, and native UI integration tests.
 
 `test/native-ui.mjs` compiles a temporary application from the production Swift sources and uses the bundled production worker with fictional cached feeds and an isolated Application Support directory. It exercises native target/action controls, validates image dimensions and paired HEIC data, rejects invalid edits and feeds, checks persistence, accepts suggestions, tests reset and close/reopen, and asserts that each tab contains no WebKit view. It also checks normal/minimum window geometry, Settings control ownership and persistence, shared status messages, appearance disclosure, export choices, and closing/reopening both windows. The tests never apply wallpaper or register login items.
 

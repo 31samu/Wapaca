@@ -6,8 +6,10 @@
   "scripts": {
     "test:suggestions": "node --test test/suggestions.mjs",
     "build:native": "node scripts/build-native.mjs",
+    "build:native:private": "node scripts/build-native.mjs --private-seed",
+    "test:build": "node --test test/build.mjs",
     "build": "node scripts/build.mjs",
-    "test": "node --test test/calendar.test.mjs test/subscriptions.mjs",
+    "test": "node --test test/calendar.test.mjs test/subscriptions.mjs test/build.mjs",
     "test:preview": "node --test test/preview.mjs",
     "refresh": "node scripts/fetch.mjs",
     "test:native": "node --test test/native.mjs",

@@ -9,23 +9,29 @@ Open `output/Wapacal.app` to manage subscriptions, edit the layout, choose event
 Development requires macOS, Xcode Command Line Tools, and Node.js 22.14 or newer. The built app targets macOS 13 and later and does not require Node.
 
 1. Install dependencies with `npm ci`.
-2. Copy `config.example.json` to `config.local.json` and adjust the course, time zone, image dimensions, and initial module dates.
-3. Optionally add a `subscriptions` array. Each entry needs a stable `id`, a `name`, and an HTTPS `url`. Set `kind` to `timeedit` or `generic`, or omit it to detect TimeEdit from the hostname.
+2. Run `npm run build:native` and open `output/Wapacal.app`.
+3. Add your calendar subscriptions in Settings → Calendars.
+4. Run `npm run test:all` after building for the complete test suite. AppKit and ImageIO tests need a logged-in macOS graphical session.
 
-   ```json
-   "subscriptions": [
-     {"id": "schedule", "name": "TimeEdit", "url": "https://example.com/schedule.ics", "kind": "timeedit"},
-     {"id": "deadlines", "name": "Moodle", "url": "https://example.com/calendar/export", "kind": "generic"}
-   ],
-   "allCalendars": true
-   ```
+The default native build starts with no subscriptions or events and shows the current month. It does not read `config.local.json`, cached calendars under `data/`, or the `CALENDAR_URL` environment variable. No local calendar setup or downloaded snapshot is needed to build it. Existing installations keep their saved settings in Application Support.
 
-4. Run `npm run refresh` to fetch configured calendars, then `npm run build:native` and open `output/Wapacal.app`. You can also build without a snapshot and add subscriptions in the app.
-5. Run `npm run test:all` after building for the complete test suite. AppKit and ImageIO tests need a logged-in macOS graphical session.
+### Private development builds
 
-`allCalendars` shows every feed by default. The course filter and TimeEdit suggestions still use `course`. Legacy `subscriptionUrl`, the `CALENDAR_URL` environment override, and `data/calendar.ics` snapshots remain supported. The supplied subscriptions are already in this workspace's ignored `config.local.json`.
+To embed local subscriptions and cached events deliberately, copy `config.example.json` to `config.local.json` and adjust it. Add a `subscriptions` array with a stable `id`, a `name`, and an HTTPS `url` for each calendar:
 
-Native builds read the configuration and cached feeds directly. They do not require `output/preview.html`. The development bundle includes its seed subscriptions and calendar data, so it is not a generic installer. Local settings, snapshots, and generated outputs are excluded from Git.
+```json
+"subscriptions": [
+  {"id": "schedule", "name": "TimeEdit", "url": "https://example.com/schedule.ics", "kind": "timeedit"},
+  {"id": "deadlines", "name": "Moodle", "url": "https://example.com/calendar/export", "kind": "generic"}
+],
+"allCalendars": true
+```
+
+Run `npm run refresh`, then `npm run build:native:private`. This writes to the same `output/Wapacal.app` path and includes private calendar data. Do not share that build. Run `npm run build:native` again to replace it with an empty build.
+
+`allCalendars` shows every feed by default. The course filter and TimeEdit suggestions still use `course`. Legacy `subscriptionUrl`, the `CALENDAR_URL` environment override, and `data/calendar.ics` snapshots remain supported by private builds and browser development tools. Missing snapshots are allowed; configured subscriptions can refresh after launch. Local settings, snapshots, and generated outputs are excluded from Git.
+
+Native builds do not require `output/preview.html`.
 
 ## Using the app
 

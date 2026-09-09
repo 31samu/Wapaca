@@ -1,3 +1,6 @@
+import AppKit
+import WebKit
+
 // Compiled into a temporary fixture-only app by native-ui.mjs.
 // Never changes wallpaper, login items, or the user's Application Support directory.
 func require(_ value: @autoclosure () -> Bool, _ message: String) throws {

@@ -3,7 +3,12 @@ import {execFileSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import sharp from 'sharp';
-import {loadSnapshots} from '../src/subscriptions.mjs';
+import {loadNativeBuildData} from './native-build-data.mjs';
+import {compileNative} from './native-compile.mjs';
+const args = process.argv.slice(2);
+if (args.some(arg => arg !== '--private-seed')) throw new Error('Usage: node scripts/build-native.mjs [--private-seed]');
+const {config, seed} = await loadNativeBuildData({privateSeed: args.includes('--private-seed')});
+if (args.includes('--private-seed')) console.warn('Private development build: the app includes local calendar data. Do not share it.');
 const outputBundle='output/Wapacal.app';
 const temp=await mkdtemp(join(tmpdir(),'wapacal-build-'));
 const bundle=join(temp,'Wapacal.app');
@@ -24,9 +29,7 @@ await writeFile(`${bundle}/Contents/Info.plist`,`<?xml version="1.0" encoding="U
 <key>UTExportedTypeDeclarations</key><array><dict><key>UTTypeIdentifier</key><string>local.wapacal.export</string><key>UTTypeConformsTo</key><array><string>public.json</string></array><key>UTTypeDescription</key><string>Wapacal light/dark export</string><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>wapacal</string></array></dict></dict></array>
 <key>UTImportedTypeDeclarations</key><array><dict><key>UTTypeIdentifier</key><string>local.timetable.export</string><key>UTTypeConformsTo</key><array><string>public.json</string></array><key>UTTypeDescription</key><string>Legacy Wapacal export</string><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>timetable</string></array></dict></dict></array>
 </dict></plist>`);
-const native=(await readFile('native/Wallpaper.swift','utf8')).replace('let args = Array', (await Promise.all(['CalendarEngine','EditorView','Editor'].map(name=>readFile(`native/${name}.swift`,'utf8')))).join('\n')+'\nlet args = Array').replace('let delegate = WallpaperApp()', 'let delegate = MainActor.assumeIsolated { EditorApp() }');
-await writeFile(join(temp,'main.swift'),native);
-execFileSync('swiftc',['-target',`${process.arch==='arm64'?'arm64':'x86_64'}-apple-macosx13.0`,'-module-cache-path','/tmp/wapacal-swift-cache',join(temp,'main.swift'),'-o',`${bundle}/Contents/MacOS/Wapacal`],{stdio:'inherit'});
+compileNative('native/main.swift', `${bundle}/Contents/MacOS/Wapacal`);
 const resources=`${bundle}/Contents/Resources`;
 await mkdir(resources,{recursive:true});
 const iconSource='assets/app-icon/Wapacal-iOS-Default-1024x1024@1x.png';
@@ -46,7 +49,6 @@ const iconHeader=Buffer.alloc(8);
 iconHeader.write('icns',0,4,'ascii');
 iconHeader.writeUInt32BE(iconLength,4);
 await writeFile(`${resources}/Wapacal.icns`,Buffer.concat([iconHeader,...iconChunks]));
-const config=JSON.parse(await readFile('config.local.json','utf8').catch(()=>readFile('config.example.json','utf8')));
 const parser=(await readFile('src/calendar.mjs','utf8')).replace(/^import .*$/gm,'').replace(/^export /gm,'');
 const engine=await readFile('node_modules/ical.js/dist/ical.es5.min.cjs','utf8');
 const layout=(await readFile('src/layout.mjs','utf8')).replace(/^export /gm,'');
@@ -58,7 +60,7 @@ const scriptJson=value=>JSON.stringify(value).replace(/</g,'\\u003c').replace(/\
 await writeFile(`${resources}/calendar-worker.html`,`<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; img-src blob: data:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'">
 </head><body><script>${engine}\n${parser}\n${layout}\n${suggestions}\nconst config=${scriptJson(workerConfig)};\n${editor}</script></body></html>`);
-await writeFile(`${resources}/seed.json`,JSON.stringify({subscriptions:await loadSnapshots(config),courseCode:config.course}));
+await writeFile(`${resources}/seed.json`,JSON.stringify(seed));
 await writeFile(`${resources}/ICAL-LICENSE`,await readFile('node_modules/ical.js/LICENSE'));
 // File Provider can attach metadata anywhere inside the generated bundle.
 execFileSync('xattr',['-cr',bundle]);

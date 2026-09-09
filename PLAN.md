@@ -7,6 +7,11 @@ The working prototype now includes the calendar parser, shared SVG renderer, bro
 The repository has also completed its first privacy and storage cleanup. Automated integration tests use fictional fixtures instead of the developer's calendar. Mutable app data lives in Application Support, older beside-the-app data migrates on first launch, generated history is bounded, and the app has a confirmed reset action. Public release packaging is deliberately deferred while the product is still changing.
 
 
+## Empty public builds, 9 September 2026
+
+The default native build now ignores local configuration, cached calendars, and `CALENDAR_URL`. It starts with an empty current-month view. `npm run build:native:private` retains optional private seed data for development. Missing snapshots no longer prevent a build. The release-packaging descriptions below record earlier plans; signing and distribution work remain deferred.
+
+
 ## Native interface migration, 8 September 2026
 
 The application now presents only AppKit views. Layout controls, date pickers, event selection and full details, suggestions, previews, and export sheets are native. A detached private WebKit worker retains the shared parser and wallpaper renderer; it is never installed in a window. The browser preview remains a separate development tool and is absent from the app bundle.

@@ -21,7 +21,11 @@ export async function loadSnapshots(config) {
     return 'null';
   }));
   if (cache) return sources.map(source => ({...source,...cache.subscriptions.find(saved => saved.id === source.id && saved.url === source.url),...source}));
-  const ics = await readFile('data/calendar.ics','utf8');
+  const ics = await readFile('data/calendar.ics','utf8').catch(error => {
+    if (error.code !== 'ENOENT') throw error;
+    return null;
+  });
+  if (ics === null) return sources;
   const metadata = JSON.parse(await readFile('data/source.json','utf8').catch(()=>'{}'));
   if (!sources.length) return [{id:'legacy',legacyIds:true,ics,...metadata}];
   return sources.map(source => ({...source,...(source.legacyIds ? {ics,...metadata} : {})}));

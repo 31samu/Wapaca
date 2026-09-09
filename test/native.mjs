@@ -7,6 +7,7 @@ import {join,resolve} from 'node:path';
 import sharp from 'sharp';
 import {renderWallpaper} from '../src/layout.mjs';
 import {loadFixtureApp} from './helpers/fixture-app.mjs';
+import {compileNative} from '../scripts/native-compile.mjs';
 const binary=resolve('output/Wapacal.app/Contents/MacOS/Wapacal');
 const bundle=resolve('output/Wapacal.app');
 
@@ -85,9 +86,9 @@ test('native export imports, validates both frames, and rejects invalid inputs w
 
 test('missing wallpaper sources can be recorded without blocking Apply and old backups still decode',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'wapacal-backup-'));
- const source=(await readFile('native/Wallpaper.swift','utf8')).split('final class WallpaperApp:')[0];
- const file=join(dir,'backup.swift');
- await writeFile(file,source+`
+ const file=join(dir,'main.swift');
+ await writeFile(file,`import AppKit
+
 let missing = URL(fileURLWithPath: "/nonexistent/wapacal-test-wallpaper.png")
 for url in [nil, missing, URL(string: "https://example.com/image.png")] as [URL?] {
  let record = WallpaperBackup(screenID: "test", url: url, options: [.imageScaling: 3, .allowClipping: true])
@@ -101,14 +102,16 @@ let decoded = try JSONDecoder().decode(WallpaperBackup.self, from: old)
 assert(decoded.canRestore)
 print("Backup regression checks passed")
 `);
- assert.match(execFileSync('swift',['-module-cache-path','/tmp/wapacal-swift-cache',file],{encoding:'utf8'}),/checks passed/);
+ const executable=join(dir,'checks');
+ compileNative(file,executable,{stdio:'pipe'});
+ assert.match(execFileSync(executable,[],{encoding:'utf8'}),/checks passed/);
 });
 
 test('refresh frequency accepts only the choices shown in the app',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'wapacal-cache-'));
- const policy=(await readFile('native/Editor.swift','utf8')).split('@MainActor final class EditorApp:')[0];
- const file=join(dir,'policy.swift');
- await writeFile(file,'import Foundation\n'+policy+`
+ const file=join(dir,'main.swift');
+ await writeFile(file,`import Foundation
+
 assert(savedRefreshInterval(nil) == 3600)
 assert(savedRefreshInterval(900) == 900)
 assert(savedRefreshInterval(1800) == 1800)
@@ -119,7 +122,9 @@ assert(savedRefreshInterval(.nan) == 3600)
 assert(savedRefreshInterval(.infinity) == 3600)
 print("Cache policy checks passed")
 `);
- assert.match(execFileSync('swift',['-module-cache-path','/tmp/wapacal-swift-cache',file],{encoding:'utf8'}),/checks passed/);
+ const executable=join(dir,'checks');
+ compileNative(file,executable,{stdio:'pipe'});
+ assert.match(execFileSync(executable,[],{encoding:'utf8'}),/checks passed/);
 });
 
 test('legacy runtime data migrates to app support and reset preserves active recovery records',async()=>{
@@ -133,9 +138,9 @@ test('legacy runtime data migrates to app support and reset preserves active rec
   writeFile(join(legacy,'restored-old.json'),'{}'),
   writeFile(join(legacy,'applied','old.heic'),'wallpaper')
  ]);
- const source=(await readFile('native/Wallpaper.swift','utf8')).split('final class WallpaperApp:')[0];
- const file=join(dir,'storage.swift');
- await writeFile(file,source+`
+ const file=join(dir,'main.swift');
+ await writeFile(file,`import AppKit
+
 try migrateLegacyWorkspace()
 let files = FileManager.default
 assert(files.fileExists(atPath: stateDirectory().appendingPathComponent("app-state.json").path))
@@ -150,6 +155,8 @@ assert(!files.fileExists(atPath: recoveryDirectory().appendingPathComponent("res
 assert(!files.fileExists(atPath: appliedDirectory().appendingPathComponent("old.heic").path))
 print("Storage migration checks passed")
 `);
- const output=execFileSync('swift',['-module-cache-path','/tmp/wapacal-swift-cache',file],{encoding:'utf8',env:{...process.env,WAPACAL_APP_SUPPORT:support,WAPACAL_LEGACY_WORKSPACE:legacy}});
+ const executable=join(dir,'checks');
+ compileNative(file,executable,{stdio:'pipe'});
+ const output=execFileSync(executable,[],{encoding:'utf8',env:{...process.env,WAPACAL_APP_SUPPORT:support,WAPACAL_LEGACY_WORKSPACE:legacy}});
  assert.match(output,/checks passed/);
 });
