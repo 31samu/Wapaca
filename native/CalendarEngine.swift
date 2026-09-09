@@ -27,8 +27,13 @@ final class CalendarEngine: NSObject, WKNavigationDelegate {
     func start() async throws {
         try await withCheckedThrowingContinuation { continuation in
             loading = continuation
-            loadTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
-                MainActor.assumeIsolated { self?.finishLoading(WallpaperError.invalid("The calendar renderer did not start. Reopen Wapacal to retry.")) }
+            loadTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) {
+                [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.finishLoading(
+                        WallpaperError.invalid(
+                            "The calendar renderer did not start. Reopen Wapacal to retry."))
+                }
             }
             worker.loadFileURL(resource, allowingReadAccessTo: resource.deletingLastPathComponent())
         }
@@ -50,14 +55,17 @@ final class CalendarEngine: NSObject, WKNavigationDelegate {
         return try await withCheckedThrowingContinuation { continuation in
             var pending: CheckedContinuation<Any, Error>? = continuation
             let timeout = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { _ in
-                let current = pending; pending = nil
-                let error = WallpaperError.invalid("The calendar renderer timed out. Reopen Wapacal to retry.")
+                let current = pending
+                pending = nil
+                let error = WallpaperError.invalid(
+                    "The calendar renderer timed out. Reopen Wapacal to retry.")
                 MainActor.assumeIsolated { self.failWorker(error) }
-                current?.resume(throwing:error)
+                current?.resume(throwing: error)
             }
             worker.callAsyncJavaScript(body, arguments: arguments, in: nil, in: .page) { result in
                 timeout.invalidate()
-                let current = pending; pending = nil
+                let current = pending
+                pending = nil
                 switch result {
                 case .success(let value): current?.resume(returning: value)
                 case .failure(let error): current?.resume(throwing: error)
@@ -67,22 +75,39 @@ final class CalendarEngine: NSObject, WKNavigationDelegate {
     }
 
     private func finishLoading(_ error: Error? = nil) {
-        loadTimer?.invalidate(); loadTimer = nil
-        let continuation = loading; loading = nil
-        if let error { continuation?.resume(throwing: error) }
-        else { continuation?.resume() }
+        loadTimer?.invalidate()
+        loadTimer = nil
+        let continuation = loading
+        loading = nil
+        if let error { continuation?.resume(throwing: error) } else { continuation?.resume() }
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { finishLoading() }
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { finishLoading(error) }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { finishLoading(error) }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        finishLoading(error)
+    }
+    func webView(
+        _ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) { finishLoading(error) }
     private func failWorker(_ error: Error) {
-        failure = error; worker.stopLoading()
-        finishLoading(error); onFailure?(error)
+        failure = error
+        worker.stopLoading()
+        finishLoading(error)
+        onFailure?(error)
     }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        failWorker(WallpaperError.invalid("The calendar renderer stopped. Your saved calendar was kept. Reopen Wapacal to retry."))
+        failWorker(
+            WallpaperError.invalid(
+                "The calendar renderer stopped. Your saved calendar was kept. Reopen Wapacal to retry."
+            ))
     }
-    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        decisionHandler(action.targetFrame?.isMainFrame == true && action.request.url?.standardizedFileURL == resource.standardizedFileURL ? .allow : .cancel)
+    func webView(
+        _ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        decisionHandler(
+            action.targetFrame?.isMainFrame == true
+                && action.request.url?.standardizedFileURL == resource.standardizedFileURL
+                ? .allow : .cancel)
     }
 }

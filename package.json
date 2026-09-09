@@ -15,7 +15,13 @@
     "test:native": "node --test test/native.mjs",
     "test:editor": "node --test test/editor.mjs",
     "test:native-ui": "node --test test/native-ui.mjs",
-    "test:all": "node --test test/*.mjs"
+    "test:all": "node --test test/*.mjs",
+    "format": "npm run format:web && npm run format:swift",
+    "format:check": "npm run format:web:check && npm run format:swift:check",
+    "format:web": "prettier --write \"{src,scripts,test}/**/*.{js,mjs,html,json}\" package.json config.example.json .prettierrc.json .swift-format",
+    "format:web:check": "prettier --check \"{src,scripts,test}/**/*.{js,mjs,html,json}\" package.json config.example.json .prettierrc.json .swift-format",
+    "format:swift": "xcrun swift-format format --in-place --recursive native test --configuration .swift-format",
+    "format:swift:check": "xcrun swift-format lint --strict --recursive native test --configuration .swift-format"
   },
   "engines": {
     "node": ">=22"
@@ -25,6 +31,7 @@
     "sharp": "0.35.4"
   },
   "devDependencies": {
-    "jsdom": "29.1.1"
+    "jsdom": "29.1.1",
+    "prettier": "3.6.2"
   }
 }

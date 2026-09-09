@@ -77,6 +77,10 @@ Rows adapt to busy days. Long titles wrap and then shorten with explicit warning
 
 ## Development tools and verification
 
+Run `npm run format` to format JavaScript, HTML, JSON, and Swift, or `npm run format:check` to check without changing files. Prettier is pinned in the npm dependencies. Swift formatting uses `xcrun swift-format` from Xcode Command Line Tools, verified with version 6.3.0. The checked-in `.prettierrc.json` and `.swift-format` files define the formatting rules. Private calendar files and generated output are excluded.
+
+The separate `format:web`, `format:web:check`, `format:swift`, and `format:swift:check` commands cover each language group.
+
 `npm run build` still generates the separate browser development preview, SVGs, light/dark PNGs, normalized events, validation reports, and `module-appearance.json` under `output/`. `WAPACAL_TODAY=YYYY-MM-DD` makes that build's date marker reproducible. It does not refresh feeds automatically.
 
 `output/preview.html` remains available for renderer development in Firefox and legacy transfer exports. It is not bundled or opened by Wapacal. Browser preferences remain separate from Mac settings. Browser HEIC export creates a `.wapacal` transfer file; the native app writes HEIC directly. Sharp and browser SVG rasterization can differ slightly in font rendering.
