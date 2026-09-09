@@ -85,6 +85,7 @@ await writeFile(
 </head><body><script>${engine}\n${parser}\n${layout}\n${suggestions}\nconst config=${scriptJson(workerConfig)};\n${editor}</script></body></html>`,
 );
 await writeFile(`${resources}/seed.json`, JSON.stringify(seed));
+await writeFile(`${resources}/LICENSE`, await readFile('LICENSE'));
 await writeFile(`${resources}/ICAL-LICENSE`, await readFile('node_modules/ical.js/LICENSE'));
 // File Provider can attach metadata anywhere inside the generated bundle.
 execFileSync('xattr', ['-cr', bundle]);
