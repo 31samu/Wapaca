@@ -77,6 +77,10 @@ Rows adapt to busy days. Long titles wrap and then shorten with explicit warning
 
 ## Development tools and verification
 
+GitHub Actions runs `.github/workflows/checks.yml` on branch pushes, pull requests from forks, and manual runs from the Actions tab. Pull requests within this repository use the checks from their branch push. The workflow installs dependencies, checks formatting, builds the empty app, and runs all tests on macOS 26 with Xcode 26.6 and Node 22.14.0.
+
+Each run has a ten-minute limit, and newer commits cancel older runs for the same branch or pull request. The workflow has read-only repository access and does not upload app bundles or test artifacts. Private repositories consume the account's Actions allowance; spending controls belong in GitHub billing settings. The first hosted run still needs to confirm that the runner supports the native UI and HEIC tests. Those tests are required and failures are not ignored.
+
 Run `npm run format` to format JavaScript, HTML, JSON, and Swift, or `npm run format:check` to check without changing files. Prettier is pinned in the npm dependencies. Swift formatting uses `xcrun swift-format` from Xcode Command Line Tools, verified with version 6.3.0. The checked-in `.prettierrc.json` and `.swift-format` files define the formatting rules. Private calendar files and generated output are excluded.
 
 The separate `format:web`, `format:web:check`, `format:swift`, and `format:swift:check` commands cover each language group.
