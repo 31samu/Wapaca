@@ -1,6 +1,6 @@
 {
   "name": "wapacal",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -21,14 +21,15 @@
     "format:web": "prettier --write \"{src,scripts,test}/**/*.{js,mjs,html,json}\" package.json config.example.json .prettierrc.json .swift-format",
     "format:web:check": "prettier --check \"{src,scripts,test}/**/*.{js,mjs,html,json}\" package.json config.example.json .prettierrc.json .swift-format",
     "format:swift": "xcrun swift-format format --in-place --recursive native test --configuration .swift-format",
-    "format:swift:check": "xcrun swift-format lint --strict --recursive native test --configuration .swift-format"
+    "format:swift:check": "xcrun swift-format lint --strict --recursive native test --configuration .swift-format",
+    "package:release": "node scripts/package-release.mjs"
   },
   "engines": {
     "node": ">=22"
   },
   "wapacal": {
     "bundleIdentifier": "com.samuelkremer.wapacal",
-    "bundleVersion": 2
+    "bundleVersion": 3
   },
   "dependencies": {
     "ical.js": "2.2.1",

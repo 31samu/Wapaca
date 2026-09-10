@@ -14,9 +14,18 @@ Turn your calendar into a Mac desktop wallpaper. Wapacal combines ICS calendar s
   <img src="assets/screenshots/wapacal-wallpaper.jpg" alt="A Wapacal calendar used as a Mac desktop wallpaper" width="500">
 </p>
 
-Wapacal is an early macOS app built from source.
+## Download and install
 
-Wapacal is not currently notarized. If downloadable builds are added, macOS may block the first launch. Open **System Settings → Privacy & Security** and choose **Open Anyway**.
+[**Download Wapacal for Mac**](https://github.com/31samu/Wapaca/releases/latest)
+
+Wapacal is an early macOS app. Download the ZIP from the release's **Assets** section. Requires macOS 13 or later. The automated download is for **Apple Silicon** Macs, with `arm64` in the filename. Intel users can build from source below, or use an `x86_64` ZIP if one is attached to the release.
+
+1. Unzip the download and drag **Wapacal.app** into **Applications**.
+2. Open Wapacal. It is **not notarized by Apple**, so macOS may block the first launch.
+3. If blocked, open **System Settings → Privacy & Security**, choose **Open Anyway**, and confirm. Only do this if you trust the download. See [Apple's instructions](https://support.apple.com/en-ie/102445).
+4. Add your ICS subscription URL in **Settings → Calendars**.
+
+The download includes no personal calendars or settings. Node.js and Xcode are not needed to run it.
 
 ### Note from maker:
 I wanted a calendar desktop wallpaper that updates automatically, so I made it. The project was largely slopped together and I don't have experience maintaining something open source, but I expect to update the app until it has all features I'd want or fix it when it breaks. Feel free to reach out, suggest something or fork the project.

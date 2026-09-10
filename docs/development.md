@@ -53,3 +53,18 @@ The built executable supports:
 ```
 
 The app also opens paired HEIC wallpapers, `.wapacal` exports, and legacy `.timetable` files through **File → Open wallpaper** or Finder.
+
+## Release downloads
+
+Run `npm run package:release` on macOS to rebuild the public app and create a ZIP and SHA-256 checksum under `output/releases/`. The command never reuses an existing private build. It checks the empty calendar seed and CPU architecture, then extracts the ZIP and verifies the app signature. The app uses an ad hoc signature and is not notarized.
+
+The ZIP targets the build machine's architecture: `arm64` for Apple Silicon or `x86_64` for Intel. The GitHub release workflow uses the Apple Silicon `macos-26` runner. Intel downloads can be packaged separately on an Intel Mac from the same release source.
+
+To publish a download:
+
+1. Set the release version in `package.json` and increment `wapacal.bundleVersion` for a new app build.
+2. Commit and push the release changes yourself.
+3. Create and publish a GitHub Release with a tag matching the package version, such as `v0.4.0`, pointing to that commit. Include the macOS requirement, supported architecture, and unnotarized installation instructions in its notes.
+4. The [release workflow](../.github/workflows/release.yml) builds the public app and attaches the ZIP and checksum. Wait for it to succeed and check the release's Assets section. The README download link points to the latest stable release.
+
+For a manual upload, attach the ZIP and its `.sha256` file from `output/releases/` to the matching GitHub Release. Keep the release attached to the exact source commit used for the build. GitHub provides source archives with each release.
