@@ -10,6 +10,10 @@ Turn your calendar into a Mac desktop wallpaper. Wapacal combines ICS calendar s
 - Refresh calendars and update your wallpaper automatically while the app runs.
 - Restore your previous wallpaper from Settings.
 
+<p align="center">
+  <img src="assets/screenshots/wapacal-editor.png" alt="Wapacal editor showing a calendar preview" width="1000">
+</p>
+
 Wapacal is an early macOS app built from source.
 
 Wapacal is not currently notarized. If downloadable builds are added, macOS may block the first launch. Open **System Settings → Privacy & Security** and choose **Open Anyway**.
@@ -37,14 +41,22 @@ Choose **Month** or **Module** in the sidebar. A module is a named date range, s
 
 Click **Apply wallpaper** to use it on the selected display, or **Export** to save an image. Settings also offers automatic updates and launch at login. Closing the window keeps Wapacal running in the menu bar; choose **Quit** there to stop it.
 
+<p align="center">
+  <img src="assets/screenshots/wapacal-wallpaper.png" alt="A Wapacal calendar used as a Mac desktop wallpaper" width="1000">
+</p>
+
+From the menu bar, you can reopen Wapacal, change settings, refresh and apply the wallpaper, or quit the app:
+
+<p align="center">
+  <img src="assets/screenshots/wapacal-menubar-menu.png" alt="Wapacal menu bar menu" width="439">
+</p>
+
 Your settings and cached calendars stay on your Mac under `~/Library/Application Support/com.samuelkremer.wapacal/`.
 
 ## Current limits
 
-- Wallpapers show Monday through Friday by default, with optional weekend columns and a maximum range of 12 weeks.
 - Feeds must use UTC times or all-day dates. Recurring events, recurrence exceptions, duplicate event IDs within a feed, and floating or named-zone times are not supported and cause the feed to be rejected.
 - External displays, inactive Spaces, and older macOS versions still need live testing. Restoring Apple's dynamic or aerial wallpaper settings is not guaranteed.
-- Events can disappear after they pass if the calendar provider stops including them in the feed.
 - Wapacal currently requires a direct ICS subscription URL. It does not connect directly to Apple Calendar or Google Calendar accounts.
 
 ## Development

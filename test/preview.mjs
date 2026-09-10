@@ -9,6 +9,20 @@ test('sanitized fixture fits the initial module in both appearances', async () =
   const { data, config } = await loadFixtureApp();
   assert.equal(data.events.length, 12);
   assert.equal(selectEvents(data.events, '1AB101').length, 9);
+  const system = renderWallpaper(data.events, {
+    ...config,
+    ...config.module,
+    mode: 'module',
+    theme: 'system',
+    systemTheme: 'dark',
+  });
+  const dark = renderWallpaper(data.events, {
+    ...config,
+    ...config.module,
+    mode: 'module',
+    theme: 'dark',
+  });
+  assert.equal(system.svg, dark.svg);
   for (const mode of ['month', 'module'])
     for (const theme of ['light', 'dark']) {
       const options = { ...config, ...config.module, mode, theme, month: '2026-09' };
@@ -35,7 +49,10 @@ test('sanitized fixture fits the initial module in both appearances', async () =
     ...config.module,
     mode: 'module',
     theme: 'light',
+    snapshotDate: data.snapshotDate,
   });
+  assert.match(wallpaper.svg, new RegExp(`>Snapshot ${data.snapshotDate}</text>`));
+  assert.doesNotMatch(wallpaper.svg, /TimeEdit ·/);
   assert.match(wallpaper.svg, /x="76" y="92"[^>]*>Prototype module<\/text>/);
   const noTitle = renderWallpaper(data.events, {
     ...config,
@@ -75,6 +92,7 @@ test('preview switches theme, edits module dates, changes month, reveals details
     true,
   );
   assert.equal(el('weekends').checked, false);
+  assert.equal(el('theme').value, 'system');
   assert.match(el('wallpaper').innerHTML, /Prototyping/);
   change('theme', 'dark');
   assert.match(el('wallpaper').innerHTML, /#18231f/);

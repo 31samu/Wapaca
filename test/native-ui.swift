@@ -131,10 +131,11 @@ Task { @MainActor in
         try require(ui.appearanceFields.isHidden, "appearance starts collapsed")
         ui.appearanceToggle.performClick(nil)
         try require(!ui.appearanceFields.isHidden, "appearance disclosure opens")
+        try require(ui.theme.itemTitles == ["System", "Light", "Dark"], "appearance choices")
         try require(ui.exportMenu.menu!.items.count == 3, "both export formats remain accessible")
 
         // Drive target/action through real native controls.
-        ui.theme.selectItem(at: 1)
+        ui.theme.selectItem(at: 2)
         ui.changeControl(ui.theme)
         let darkDeadline = Date().addingTimeInterval(15)
         while ui.editor["theme"] as? String != "dark" && Date() < darkDeadline {
@@ -152,8 +153,9 @@ Task { @MainActor in
         ui.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         try require(!ui.details.string.isEmpty, "native details")
         let eventID = ui.events[0]["uid"] as! String
-        let checkbox =
-            ui.tableView(ui.table, viewFor: ui.table.tableColumns[0], row: 0) as! NSButton
+        let checkboxCell =
+            ui.tableView(ui.table, viewFor: ui.table.tableColumns[0], row: 0) as! NSTableCellView
+        let checkbox = checkboxCell.subviews.compactMap { $0 as? NSButton }.first!
         checkbox.state = .off
         ui.includeEvent(checkbox)
         let exclusionDeadline = Date().addingTimeInterval(15)

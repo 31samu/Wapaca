@@ -24,42 +24,197 @@ export function cleanDescription(value = '') {
   return (value || '').replace(/(?:^|\n)\s*ID\s+\d+\s*$/i, '').trim();
 }
 
-// The first prototype accepts concrete UTC events and date-only events. Reject
-// unsupported calendar semantics instead of silently rendering wrong dates.
-export function parseCalendar(source, timeZone = 'Europe/Stockholm', kind = 'auto') {
+const HISTORY_VERSION = 1;
+const HISTORY_MONTHS = 2;
+
+function historyEvents(source, timeZone) {
+  if (source.history?.version !== HISTORY_VERSION || !Array.isArray(source.history.events))
+    return [];
+  const keys = new Set();
+  return source.history.events.map((event) => {
+    if (
+      !event ||
+      typeof event.uid !== 'string' ||
+      !event.uid ||
+      keys.has(event.uid) ||
+      typeof event.start !== 'string' ||
+      typeof event.end !== 'string' ||
+      typeof event.allDay !== 'boolean'
+    )
+      throw new Error('Saved calendar history is invalid.');
+    keys.add(event.uid);
+    const startLocal = event.allDay
+      ? { date: event.start, time: '' }
+      : localParts(event.start, timeZone);
+    const endLocal = event.allDay ? { date: event.end, time: '' } : localParts(event.end, timeZone);
+    return {
+      ...event,
+      date: startLocal.date,
+      startTime: startLocal.time,
+      endDate: endLocal.date,
+      endTime: endLocal.time,
+    };
+  });
+}
+
+function monthStartMonthsAgo(date, months) {
+  const [year, month] = date.slice(0, 7).split('-').map(Number);
+  const shifted = year * 12 + month - 1 - months;
+  const shiftedYear = Math.floor(shifted / 12);
+  const shiftedMonth = ((shifted % 12) + 12) % 12;
+  return `${shiftedYear}-${String(shiftedMonth + 1).padStart(2, '0')}-01`;
+}
+
+function completedBy(event, instant, localDate) {
+  return event.allDay ? event.end <= localDate : event.end <= instant;
+}
+
+function withinHistoryWindow(event, cutoff, timeZone) {
+  return event.allDay ? event.end > cutoff : localParts(event.end, timeZone).date >= cutoff;
+}
+
+// Resolve wall-clock times with the host's IANA database. At a fall-back
+// overlap use the first occurrence; in a spring gap use the pre-transition
+// offset, as RFC 5545 specifies for explicit local date-times.
+function ianaZone(tzid) {
+  let formatter;
+  try {
+    formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tzid,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    });
+  } catch {
+    throw new Error(`Unknown calendar time zone: ${tzid}. Include its VTIMEZONE definition.`);
+  }
+  const offsetAt = (instant) => {
+    const parts = Object.fromEntries(formatter.formatToParts(new Date(instant)).map(p => [p.type, p.value]));
+    return (Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second) - instant) / 1000;
+  };
+  const zone = new ICAL.Timezone({ tzid });
+  zone.utcOffset = (time) => {
+    const wall = Date.UTC(time.year, time.month - 1, time.day, time.hour, time.minute, time.second);
+    const before = offsetAt(wall - 2 * 86400000);
+    const after = offsetAt(wall + 2 * 86400000);
+    const matches = [...new Set([before, after])].filter(offset => offsetAt(wall - offset * 1000) === offset);
+    return matches.length ? Math.max(...matches) : before;
+  };
+  return zone;
+}
+
+export function recurrenceWindow(options = {}, timeZone = 'Europe/Stockholm') {
+  const year = Number(localParts(options.today || new Date(), timeZone).date.slice(0, 4));
+  // Keep nearby events available for module suggestions, and include any selected
+  // historical/future view. Callers can request an exact window with from/to.
+  const start = options.start || (options.month ? `${options.month}-01` : '');
+  const end = options.end || (options.month ? `${options.month}-31` : '');
+  return {
+    from: options.from || (start && start < `${year - 1}-01-01` ? start : `${year - 1}-01-01`),
+    to: options.to || (end && end > `${year + 2}-01-01` ? end : `${year + 2}-01-01`),
+  };
+}
+
+const calendarStamp = time => time.isDate ? time.toString() : time.toJSDate().toISOString();
+const occurrenceUid = (uid, recurrenceId) => JSON.stringify(['occurrence', uid, calendarStamp(recurrenceId)]);
+const isCancelled = component => String(component.getFirstPropertyValue('status')).toUpperCase() === 'CANCELLED';
+
+function concreteEvents(calendar, timeZone, options) {
+  const originalLookup = calendar.getTimeZoneByID.bind(calendar);
+  const zones = new Map();
+  calendar.getTimeZoneByID = (tzid) => {
+    const embedded = originalLookup(tzid);
+    if (embedded) return embedded;
+    if (!zones.has(tzid)) zones.set(tzid, ianaZone(tzid));
+    return zones.get(tzid);
+  };
+  const groups = new Map();
+  for (const component of calendar.getAllSubcomponents('vevent')) {
+    // Hydrate before expansion so floating dates recur in the wallpaper's zone.
+    for (const property of component.getAllProperties()) {
+      if (property.type === 'period') throw new Error('RDATE periods are not supported; use date-times and event durations.');
+      if (property.type !== 'date-time') continue;
+      for (const value of property.getValues()) {
+        if (value.zone.tzid === 'floating') value.zone = calendar.getTimeZoneByID(timeZone);
+      }
+    }
+    const event = new ICAL.Event(component, { exceptions: [] });
+    if (!event.uid) throw new Error('Missing event UID; resolve before rendering.');
+    if (component.getFirstProperty('recurrence-id')?.getParameter('range'))
+      throw new Error('Recurrence RANGE exceptions are not supported; export individual changed occurrences.');
+    if (!groups.has(event.uid)) groups.set(event.uid, new Map());
+    const records = groups.get(event.uid);
+    const key = event.recurrenceId ? calendarStamp(event.recurrenceId) : 'master';
+    if (records.has(key)) {
+      if (records.get(key).component.toString() === component.toString()) continue;
+      throw new Error('Conflicting duplicate event UID and recurrence ID; resolve before rendering.');
+    }
+    records.set(key, event);
+  }
+  const result = [];
+  const cancelledUids = [];
+  const seriesUids = [];
+  const { from, to } = recurrenceWindow(options, timeZone);
+  // Padding includes the rest of the first and last calendar rows and zone offsets.
+  const lower = new Date(`${from}T00:00:00Z`).getTime() - 8 * 86400000;
+  const upper = new Date(`${to}T00:00:00Z`).getTime() + 8 * 86400000;
+  if (!Number.isFinite(lower) || !Number.isFinite(upper) || upper < lower)
+    throw new Error('Invalid recurrence expansion window.');
+  let iterations = 0;
+  function append(event, startDate, endDate, uid, seriesUid) {
+    if (!startDate || !endDate) throw new Error('An event is missing its dates.');
+    if (startDate.isDate !== endDate.isDate) throw new Error('Mixed date and time values in an event.');
+    if (calendarStamp(endDate) < calendarStamp(startDate)) throw new Error('An event ends before it starts.');
+    if (seriesUid && (endDate.toJSDate().getTime() < lower || startDate.toJSDate().getTime() > upper)) return;
+    if (result.length >= 20000) throw new Error('Calendar exceeds the 20,000-event expansion limit.');
+    result.push({ event, startDate, endDate, uid, ...(seriesUid ? { seriesUid } : {}) });
+  }
+  for (const [uid, records] of groups) {
+    const master = records.get('master');
+    const recurring = master?.isRecurring() || records.size > (master ? 1 : 0);
+    if (recurring) seriesUids.push(uid);
+    if (master && isCancelled(master.component)) {
+      cancelledUids.push(uid);
+      continue;
+    }
+    for (const [key, exception] of records) {
+      if (key === 'master') continue;
+      const id = occurrenceUid(uid, exception.recurrenceId);
+      if (isCancelled(exception.component)) cancelledUids.push(id);
+      else append(exception, exception.startDate, exception.startDate && exception.endDate, id, uid);
+    }
+    if (!master) continue;
+    if (!master.startDate) throw new Error('An event is missing its dates.');
+    if (!recurring) {
+      append(master, master.startDate, master.endDate, uid);
+      continue;
+    }
+    const iterator = master.iterator();
+    let occurrence;
+    while ((occurrence = iterator.next())) {
+      if (++iterations > 50000) throw new Error('Calendar exceeds the 50,000-step recurrence expansion limit.');
+      if (occurrence.toJSDate().getTime() > upper) break;
+      if (records.has(calendarStamp(occurrence))) continue;
+      const details = master.getOccurrenceDetails(occurrence);
+      append(master, details.startDate, details.endDate, occurrenceUid(uid, occurrence), uid);
+    }
+  }
+  if (new Set(result.map(item => item.uid)).size !== result.length)
+    throw new Error('Conflicting duplicate expanded event UID.');
+  return { records: result, cancelledUids, seriesUids };
+}
+
+export function parseCalendar(source, timeZone = 'Europe/Stockholm', kind = 'auto', options = {}) {
   const calendar = new ICAL.Component(ICAL.parse(source));
   if (calendar.name !== 'vcalendar') throw new Error('Expected an iCalendar VCALENDAR.');
   const timeEdit =
     kind === 'timeedit' ||
     (kind === 'auto' && /timeedit/i.test(calendar.getFirstPropertyValue('prodid') || source));
-  const keys = new Set();
-  const events = calendar
-    .getAllSubcomponents('vevent')
-    .map((component) => {
-      const event = new ICAL.Event(component);
-      if (event.isRecurring() || event.isRecurrenceException()) {
-        throw new Error(
-          'Recurring events need expansion support before this feed can be previewed.',
-        );
-      }
-      if (!event.uid || keys.has(event.uid))
-        throw new Error('Missing or duplicate event UID; resolve before rendering.');
-      keys.add(event.uid);
-      // Cancellation notices may contain only the UID and status, without dates.
-      if (String(component.getFirstPropertyValue('status')).toUpperCase() === 'CANCELLED')
-        return null;
-      if (!event.startDate || !event.endDate) throw new Error('An event is missing its dates.');
-      const allDay = event.startDate.isDate;
-      if (event.endDate.isDate !== allDay)
-        throw new Error('Mixed date and time values in an event.');
-      if (!allDay && (event.startDate.zone.tzid !== 'UTC' || event.endDate.zone.tzid !== 'UTC')) {
-        throw new Error(
-          'This prototype supports UTC timed events. Named and floating timezones need validation first.',
-        );
-      }
-      const start = allDay ? event.startDate.toString() : event.startDate.toJSDate().toISOString();
-      const end = allDay ? event.endDate.toString() : event.endDate.toJSDate().toISOString();
-      if (end < start) throw new Error('An event ends before it starts.');
+  const { records, cancelledUids, seriesUids } = concreteEvents(calendar, timeZone, options);
+  const events = records.map(({ event, startDate, endDate, uid, seriesUid }) => {
+      const component = event.component;
+      const allDay = startDate.isDate;
+      const start = calendarStamp(startDate);
+      const end = calendarStamp(endDate);
       const startLocal = allDay ? { date: start, time: '' } : localParts(start, timeZone);
       const endLocal = allDay ? { date: end, time: '' } : localParts(end, timeZone);
       const summary = event.summary || 'Untitled event';
@@ -88,7 +243,8 @@ export function parseCalendar(source, timeZone = 'Europe/Stockholm', kind = 'aut
         specialized && room && mentionedRooms.some((value) => value !== room),
       );
       return {
-        uid: event.uid,
+        uid,
+        ...(seriesUid ? { seriesUid } : {}),
         calendarKind: specialized ? 'timeedit' : 'generic',
         start,
         end,
@@ -113,11 +269,60 @@ export function parseCalendar(source, timeZone = 'Europe/Stockholm', kind = 'aut
     })
     .filter(Boolean);
   events.sort((a, b) => a.start.localeCompare(b.start) || a.uid.localeCompare(b.uid));
-  return { name: calendar.getFirstPropertyValue('x-wr-calname') || 'Calendar', timeZone, events };
+  return {
+    name: calendar.getFirstPropertyValue('x-wr-calname') || 'Calendar',
+    timeZone,
+    events,
+    cancelledUids,
+    seriesUids,
+  };
+}
+
+export function reconcileSubscriptions(
+  previousSubscriptions,
+  nextSubscriptions,
+  fetchedAt,
+  timeZone = 'Europe/Stockholm',
+) {
+  const instant = new Date(fetchedAt).toISOString();
+  const localDate = localParts(instant, timeZone).date;
+  const cutoff = monthStartMonthsAgo(localDate, HISTORY_MONTHS);
+  const previousById = new Map(previousSubscriptions.map((source) => [source.id, source]));
+
+  return nextSubscriptions.map((source) => {
+    const fresh = source.ics
+      ? parseCalendar(source.ics, timeZone, source.kind || 'auto', { today: fetchedAt })
+      : { events: [], cancelledUids: [] };
+    const previous = previousById.get(source.id);
+    const sameCalendar = previous && String(previous.url || '') === String(source.url || '');
+    const priorEvents = new Map();
+    if (sameCalendar) {
+      for (const event of historyEvents(previous, timeZone)) priorEvents.set(event.uid, event);
+      if (previous.ics)
+        for (const event of parseCalendar(previous.ics, timeZone, previous.kind || 'auto', { today: fetchedAt }).events)
+          priorEvents.set(event.uid, event);
+    }
+    const freshUids = new Set(fresh.events.map((event) => event.uid));
+    const cancelledUids = new Set(fresh.cancelledUids);
+    const retained = [...priorEvents.values()]
+      .filter(
+        (event) =>
+          !freshUids.has(event.uid) &&
+          !cancelledUids.has(event.uid) &&
+          !(event.seriesUid && (cancelledUids.has(event.seriesUid) || fresh.seriesUids?.includes(event.seriesUid))) &&
+          completedBy(event, instant, localDate) &&
+          withinHistoryWindow(event, cutoff, timeZone),
+      )
+      .sort((a, b) => a.start.localeCompare(b.start) || a.uid.localeCompare(b.uid));
+    const reconciled = { ...source };
+    if (retained.length) reconciled.history = { version: HISTORY_VERSION, events: retained };
+    else delete reconciled.history;
+    return reconciled;
+  });
 }
 
 // Source IDs stay local and never contain the subscription URL or its credentials.
-export function parseCalendars(subscriptions, timeZone = 'Europe/Stockholm') {
+export function parseCalendars(subscriptions, timeZone = 'Europe/Stockholm', options = {}) {
   const ids = new Set();
   const events = [];
   let name = 'Calendars';
@@ -125,9 +330,15 @@ export function parseCalendars(subscriptions, timeZone = 'Europe/Stockholm') {
     if (!source.id || ids.has(source.id)) throw new Error('Missing or duplicate subscription ID.');
     ids.add(source.id);
     if (!source.ics) continue;
-    const parsed = parseCalendar(source.ics, timeZone, source.kind || 'auto');
+    const parsed = parseCalendar(source.ics, timeZone, source.kind || 'auto', options);
     if (source.legacyIds) name = parsed.name;
-    for (const event of parsed.events)
+    const sourceEvents = new Map(
+      historyEvents(source, timeZone)
+        .filter(event => !parsed.cancelledUids.includes(event.uid) && !(event.seriesUid && (parsed.seriesUids.includes(event.seriesUid) || parsed.cancelledUids.includes(event.seriesUid))))
+        .map((event) => [event.uid, event]),
+    );
+    for (const event of parsed.events) sourceEvents.set(event.uid, event);
+    for (const event of sourceEvents.values())
       events.push({
         ...event,
         uid: source.legacyIds ? event.uid : JSON.stringify([source.id, event.uid]),

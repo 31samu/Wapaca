@@ -60,6 +60,15 @@ test('saved settings, custom dimensions, unknown fields and exclusions survive l
   dom.window.close();
 });
 
+test('system is the default appearance and is a valid preview setting', async () => {
+  const { dom, w, snapshot } = await setup();
+  assert.equal(snapshot().editor.theme, 'system');
+  w.nativeUpdate({ theme: 'system' });
+  assert.equal(snapshot().editor.theme, 'system');
+  assert.throws(() => w.nativeUpdate({ theme: 'unknown' }));
+  dom.window.close();
+});
+
 test('wallpaper matches the shared renderer exactly and preserves plain event details', async () => {
   const { dom, seed, snapshot } = await setup();
   const current = snapshot();
@@ -77,9 +86,10 @@ test('wallpaper matches the shared renderer exactly and preserves plain event de
     '2026-09-08T12:00:00Z',
   );
   dom.window.nativeUpdate({ mode: 'month', month: '2026-09', course: '' });
-  assert.equal(snapshot().events[0].description, 'Full plain text');
-  assert.equal(snapshot().events[0].location, 'Room 12');
-  assert.equal(snapshot().events[0].title, '<script>alert(1)</script>');
+  const markup = snapshot().events.find((event) => event.uid === 'markup');
+  assert.equal(markup.description, 'Full plain text');
+  assert.equal(markup.location, 'Room 12');
+  assert.equal(markup.title, '<script>alert(1)</script>');
   assert.match(snapshot().svg, /&lt;script&gt;/);
   assert.equal(dom.window.document.querySelectorAll('script').length, 1);
   dom.window.close();
@@ -126,11 +136,15 @@ test('suggestions require an explicit choice and accept edited dates without cha
   dom.window.close();
 });
 
-test('cached startup and refresh retain exclusions through moves, deletions and cancellations', async () => {
+test('refresh retains recent completed events, drops future omissions, and persists cancellations', async () => {
   const { dom, w, seed, snapshot } = await setup();
   w.nativeLoad({
     ...seed,
-    ics: calendar(session('kept', 'Original'), session('deleted', 'Deleted later')),
+    ics: calendar(
+      session('kept', 'Original'),
+      session('deleted', 'Completed event'),
+      session('future', 'Future event', '20260921'),
+    ),
     editor: {
       mode: 'module',
       start: '2026-09-01',
@@ -139,8 +153,8 @@ test('cached startup and refresh retain exclusions through moves, deletions and 
       excludedEventIds: ['kept'],
     },
   });
-  assert.equal(snapshot().includedCount, 1);
-  assert.equal(snapshot().events.length, 2);
+  assert.equal(snapshot().includedCount, 2);
+  assert.equal(snapshot().events.length, 3);
   w.nativeFeed(
     calendar(
       session('kept', 'Moved', '20260909'),
@@ -151,7 +165,9 @@ test('cached startup and refresh retain exclusions through moves, deletions and 
   );
   const before = snapshot();
   assert.match(before.svg, /New session/);
-  assert.doesNotMatch(before.svg, /Moved|Deleted later/);
+  assert.match(before.svg, /Completed event/);
+  assert.doesNotMatch(before.svg, /Moved|Future event/);
+  assert.equal(before.events.length, 3);
   assert.equal(before.events.find((e) => e.uid === 'kept').included, false);
   assert.throws(
     () =>
@@ -162,9 +178,19 @@ test('cached startup and refresh retain exclusions through moves, deletions and 
     /duplicate/,
   );
   assert.deepEqual(snapshot(), before);
-  w.nativeFeed(calendar(), '2026-09-09T12:00:00Z');
-  assert.equal(snapshot().includedCount, 0);
+  const persistedSources = w.nativeFeed(
+    calendar('BEGIN:VEVENT\r\nUID:deleted\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\n'),
+    '2026-09-09T12:00:00Z',
+  );
+  assert.equal(snapshot().includedCount, 1);
+  assert.match(snapshot().svg, /New session/);
+  assert.doesNotMatch(snapshot().svg, /Completed event/);
   assert.ok(snapshot().editor.excludedEventIds.includes('kept'));
+  const savedEditor = snapshot().editor;
+  w.nativeLoad({ ...seed, subscriptions: persistedSources, editor: savedEditor });
+  assert.equal(snapshot().includedCount, 1);
+  assert.match(snapshot().svg, /New session/);
+  assert.doesNotMatch(snapshot().svg, /Completed event/);
   dom.window.close();
 });
 

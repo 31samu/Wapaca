@@ -90,7 +90,7 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
     override func loadView() {
         view = NSView()
         mode.addItems(withTitles: ["Module", "Month"])
-        theme.addItems(withTitles: ["Light", "Dark"])
+        theme.addItems(withTitles: ["System", "Light", "Dark"])
         for control in [mode, theme, resolution, course] {
             control.target = self
             control.action = #selector(changeControl(_:))
@@ -293,7 +293,8 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
         editor = snapshot["editor"] as? [String: Any] ?? [:]
         events = snapshot["events"] as? [[String: Any]] ?? []
         mode.selectItem(at: editor["mode"] as? String == "month" ? 1 : 0)
-        theme.selectItem(at: editor["theme"] as? String == "dark" ? 1 : 0)
+        theme.selectItem(
+            at: ["system": 0, "light": 1, "dark": 2][editor["theme"] as? String ?? "system"] ?? 0)
         // Keep text being edited intact when a background refresh arrives.
         if name.currentEditor() == nil { name.stringValue = editor["name"] as? String ?? "" }
         for (picker, key) in [(start, "start"), (end, "end"), (month, "month")] {
@@ -353,7 +354,12 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
         var patch: [String: Any] = [:]
         switch sender {
         case mode: patch["mode"] = mode.indexOfSelectedItem == 1 ? "month" : "module"
-        case theme: patch["theme"] = theme.indexOfSelectedItem == 1 ? "dark" : "light"
+        case theme:
+            switch theme.indexOfSelectedItem {
+            case 1: patch["theme"] = "light"
+            case 2: patch["theme"] = "dark"
+            default: patch["theme"] = "system"
+            }
         case course: patch["course"] = course.selectedItem?.representedObject as? String ?? ""
         case resolution:
             let values =
@@ -402,6 +408,7 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
     func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
         guard events.indices.contains(row) else { return nil }
         let event = events[row]
+        let cell = NSTableCellView()
         if column?.identifier.rawValue == "included" {
             let checkbox = NSButton(
                 checkboxWithTitle: "", target: self, action: #selector(includeEvent(_:)))
@@ -410,7 +417,13 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
             checkbox.setAccessibilityLabel(
                 "Include \(event["title"] as? String ?? "event"), \(event["date"] as? String ?? "")"
             )
-            return checkbox
+            cell.addSubview(checkbox)
+            checkbox.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                checkbox.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
+                checkbox.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            return cell
         }
         let text: String
         switch column?.identifier.rawValue {
@@ -423,7 +436,14 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
         let label = NSTextField(labelWithString: text)
         label.lineBreakMode = .byTruncatingTail
         label.toolTip = text
-        return label
+        cell.addSubview(label)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
     }
     @objc func includeEvent(_ sender: NSButton) {
         guard events.indices.contains(sender.tag), let uid = events[sender.tag]["uid"] as? String

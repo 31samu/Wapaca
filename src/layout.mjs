@@ -20,6 +20,10 @@ export const palettes = {
     orange: '#e7b589',
   },
 };
+export function resolveTheme(theme, systemTheme = 'light') {
+  const resolved = theme === 'system' ? systemTheme : theme;
+  return resolved === 'dark' ? 'dark' : 'light';
+}
 export const escapeXml = (value) =>
   String(value).replace(
     /[<>&"']/g,
@@ -214,7 +218,7 @@ export function renderWallpaper(events, options) {
   )
     throw new Error('Use an image between 1280 × 720 and 7680 × 4320 pixels.');
   const grid = buildGrid(events, options);
-  const p = palettes[options.theme] || palettes.light;
+  const p = palettes[resolveTheme(options.theme, options.systemTheme)];
   const W = 1512,
     H = (height / width) * W;
   const menuBarInset = 24;
@@ -415,7 +419,7 @@ export function renderWallpaper(events, options) {
   text(
     x,
     H - 22,
-    `TimeEdit · ${options.snapshotDate ? 'Snapshot ' + options.snapshotDate : 'Local snapshot'}`,
+    options.snapshotDate ? 'Snapshot ' + options.snapshotDate : 'Local snapshot',
     10,
     p.muted,
   );

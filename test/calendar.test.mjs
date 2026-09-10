@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCalendar, localParts } from '../src/calendar.mjs';
+import {
+  parseCalendar,
+  parseCalendars,
+  reconcileSubscriptions,
+  localParts,
+} from '../src/calendar.mjs';
 import { buildGrid, renderWallpaper, wrapText } from '../src/layout.mjs';
 const ics = (body) =>
   `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:test@example.com\r\n${body}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
@@ -152,7 +157,9 @@ test('unsupported recurrence is reported instead of omitted', () => {
   );
 });
 test('cancellation notices without dates are omitted; ambiguous UIDs and recurrence exceptions reject the feed', () => {
-  assert.deepEqual(parseCalendar(ics('STATUS:CANCELLED')).events, []);
+  const cancelled = parseCalendar(ics('STATUS:CANCELLED'));
+  assert.deepEqual(cancelled.events, []);
+  assert.deepEqual(cancelled.cancelledUids, ['test@example.com']);
   const event =
     'BEGIN:VEVENT\r\nUID:same\r\nDTSTART:20260908T080000Z\r\nDTEND:20260908T100000Z\r\nEND:VEVENT\r\n';
   assert.throws(
@@ -173,6 +180,42 @@ test('cancellation notices without dates are omitted; ambiguous UIDs and recurre
       ),
     /UID/,
   );
+});
+test('refresh keeps two months of completed omissions and drops future, cancelled, and older events', () => {
+  const event = (uid, start, end, extra = '') =>
+    `BEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART:${start}\r\nDTEND:${end}\r\nSUMMARY:${uid}\r\n${extra}END:VEVENT\r\n`;
+  const previous = {
+    id: 'calendar',
+    url: 'https://example.com/calendar.ics',
+    kind: 'generic',
+    ics: `BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${event('old', '20260630T080000Z', '20260630T100000Z')}${event('past', '20260715T080000Z', '20260715T100000Z')}${event('cancelled', '20260810T080000Z', '20260810T100000Z')}${event('future', '20260920T080000Z', '20260920T100000Z')}END:VCALENDAR\r\n`,
+  };
+  const next = {
+    ...previous,
+    ics: `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:cancelled\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`,
+  };
+  const [reconciled] = reconcileSubscriptions(
+    [previous],
+    [next],
+    '2026-09-10T12:00:00Z',
+    'Europe/Stockholm',
+  );
+  assert.deepEqual(
+    reconciled.history.events.map((item) => item.uid),
+    ['past'],
+  );
+  assert.deepEqual(
+    parseCalendars([reconciled]).events.map((item) => item.originalUid),
+    ['past'],
+  );
+
+  const [pruned] = reconcileSubscriptions(
+    [reconciled],
+    [{ ...reconciled, ics: 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n' }],
+    '2026-10-01T12:00:00Z',
+    'Europe/Stockholm',
+  );
+  assert.equal(pruned.history, undefined);
 });
 test('spring and autumn transitions keep UTC instants on the correct local date and time', () => {
   assert.deepEqual(localParts('2026-03-29T00:30:00Z', 'Europe/Stockholm'), {

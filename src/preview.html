@@ -265,6 +265,7 @@
         <div class="field">
           <label for="theme">Appearance</label
           ><select id="theme">
+            <option value="system">System</option>
             <option value="light">Light</option>
             <option value="dark">Dark</option>
           </select>
@@ -349,7 +350,7 @@
       const $ = (id) => document.getElementById(id);
       const state = {
         mode: 'module',
-        theme: 'light',
+        theme: 'system',
         month: data.today.slice(0, 7),
         name: config.module.name,
         start: config.module.start,
@@ -490,7 +491,13 @@
         $('module-fields').hidden = state.mode !== 'module';
         $('month-field').hidden = state.mode !== 'month';
         try {
-          result = renderWallpaper(data.events, state);
+          result = renderWallpaper(data.events, {
+            ...state,
+            systemTheme:
+              typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light',
+          });
           const candidates = buildGrid(data.events, { ...state, excludedEventIds: [] }).visible;
           $('error').textContent = '';
           $('wallpaper').innerHTML = result.svg;
@@ -572,6 +579,11 @@
           $('export-heic').disabled = true;
         }
       }
+      const appearanceQuery =
+        typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
+      appearanceQuery?.addEventListener?.('change', () => {
+        if (state.theme === 'system') render();
+      });
       const binds = [
         ['mode', 'mode'],
         ['theme', 'theme'],

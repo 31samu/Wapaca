@@ -733,13 +733,17 @@ final class StatusLabel: NSTextField {
         Task { @MainActor in
             defer { fetching = false }
             do {
-                _ = try await js(
-                    "return window.nativeCalendars(subscriptions,fetchedAt)",
-                    [
-                        "subscriptions": sources,
-                        "fetchedAt": ISO8601DateFormatter().string(from: Date()),
-                    ])
-                saved["subscriptions"] = sources
+                guard
+                    let reconciled = try await js(
+                        "return window.nativeCalendars(subscriptions,fetchedAt)",
+                        [
+                            "subscriptions": sources,
+                            "fetchedAt": ISO8601DateFormatter().string(from: Date()),
+                        ]) as? [[String: Any]]
+                else {
+                    throw WallpaperError.invalid("Could not save calendar history.")
+                }
+                saved["subscriptions"] = reconciled
                 persist()
                 reloadSources()
                 status.stringValue = "Calendar removed."
@@ -773,8 +777,9 @@ final class StatusLabel: NSTextField {
         let adding = !sources.indices.contains(index)
         var source: [String: Any] = adding ? ["id": UUID().uuidString] : sources[index]
         if source["url"] as? String != value {
-            source.removeValue(forKey: "etag")
-            source.removeValue(forKey: "modified")
+            for key in ["ics", "fetchedAt", "checkedAt", "etag", "modified", "history"] {
+                source.removeValue(forKey: key)
+            }
         }
         let name = sourceName.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         source["url"] = value
@@ -899,11 +904,15 @@ final class StatusLabel: NSTextField {
                         candidate["modified"] = http.value(forHTTPHeaderField: "Last-Modified")
                         var next = sources
                         next[index] = candidate
-                        _ = try await js(
-                            "return window.nativeCalendars(subscriptions,fetchedAt)",
-                            ["subscriptions": next, "fetchedAt": now])
+                        guard
+                            let reconciled = try await js(
+                                "return window.nativeCalendars(subscriptions,fetchedAt)",
+                                ["subscriptions": next, "fetchedAt": now]) as? [[String: Any]]
+                        else {
+                            throw WallpaperError.invalid("Could not save calendar history.")
+                        }
                         guard generation == dataGeneration else { return }
-                        sources = next
+                        sources = reconciled
                     } else if http.statusCode != 304 || source["ics"] == nil {
                         throw WallpaperError.invalid("HTTP \(http.statusCode).")
                     }

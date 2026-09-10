@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
-import { parseCalendars } from '../src/calendar.mjs';
+import { parseCalendars, reconcileSubscriptions } from '../src/calendar.mjs';
 import {
   configuredSubscriptions,
   loadSnapshots,
@@ -27,16 +27,18 @@ for (let index = 0; index < sources.length; index++) {
     if (response.status === 304 && source.ics) continue;
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const ics = await readCalendarResponse(response);
+    const fetchedAt = new Date().toISOString();
     const candidate = {
       ...source,
       ics,
-      fetchedAt: new Date().toISOString(),
+      fetchedAt,
       etag: response.headers.get('etag'),
       modified: response.headers.get('last-modified'),
     };
-    const next = sources.with(index, candidate);
+    const [reconciled] = reconcileSubscriptions([source], [candidate], fetchedAt, config.timeZone);
+    const next = sources.with(index, reconciled);
     parseCalendars(next, config.timeZone);
-    sources[index] = candidate;
+    sources[index] = reconciled;
     console.log(`${source.name}: refreshed.`);
   } catch {
     failed++;

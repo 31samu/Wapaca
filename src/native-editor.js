@@ -4,7 +4,7 @@ const nativeDefaults = (() => {
   const today = localParts(new Date(), config.timeZone).date;
   return {
     mode: 'module',
-    theme: 'light',
+    theme: 'system',
     month: today.slice(0, 7),
     ...config.module,
     course: config.allCalendars ? '' : config.course,
@@ -22,8 +22,17 @@ const nativeDefaults = (() => {
       : [],
   };
 })();
+function preferredTheme() {
+  return typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light';
+}
+function renderOptions(options) {
+  return { ...options, systemTheme: preferredTheme() };
+}
 let state = { ...nativeDefaults };
 let data = { name: 'Calendar', events: [] };
+let calendarSources = [];
 let courseCode = config.course || '';
 let revision = 0;
 function advancedDay(previous) {
@@ -39,7 +48,7 @@ function advancedDay(previous) {
 }
 function commit(nextData, next) {
   // All replacements are transactional, including invalid date ranges and dimensions.
-  renderWallpaper(nextData.events, next);
+  renderWallpaper(nextData.events, renderOptions(next));
   data = nextData;
   state = next;
   revision++;
@@ -64,6 +73,11 @@ window.nativeLoad = function (payload) {
       .sort()[0];
   if (fetchedAt) next.snapshotDate = localParts(fetchedAt, next.timeZone).date;
   commit(parsed, next);
+  calendarSources = payload.subscriptions
+    ? payload.subscriptions
+    : payload.ics
+      ? [{ id: 'legacy', legacyIds: true, ics: payload.ics, fetchedAt: payload.fetchedAt }]
+      : [];
   if (Object.hasOwn(payload, 'courseCode')) courseCode = payload.courseCode || '';
   return true;
 };
@@ -87,7 +101,7 @@ window.nativeUpdate = function (patch) {
   if (Object.keys(patch).some((key) => !editable.includes(key)))
     throw new Error('Unknown editor setting.');
   const next = { ...state, ...patch };
-  if (!['module', 'month'].includes(next.mode) || !['light', 'dark'].includes(next.theme))
+  if (!['module', 'month'].includes(next.mode) || !['system', 'light', 'dark'].includes(next.theme))
     throw new Error('Choose a valid view and appearance.');
   if (typeof next.includeWeekends !== 'boolean')
     throw new Error('Choose whether to include weekends.');
@@ -108,10 +122,12 @@ window.nativeInclude = function (uid, included) {
   return commit(data, { ...state, excludedEventIds: [...excluded] });
 };
 window.nativeSources = function (subscriptions, clearCourse) {
-  return commit(parseCalendars(subscriptions, state.timeZone), {
+  const committed = commit(parseCalendars(subscriptions, state.timeZone), {
     ...state,
     ...(clearCourse ? { course: '' } : {}),
   });
+  calendarSources = subscriptions;
+  return committed;
 };
 window.nativeReset = function () {
   const today = localParts(new Date(), nativeDefaults.timeZone).date;
@@ -130,23 +146,37 @@ window.nativeReset = function () {
       today,
     },
   );
+  calendarSources = [];
   courseCode = '';
   return true;
 };
-window.nativeFeed = (ics, fetchedAt) =>
-  window.nativeCalendars([{ id: 'legacy', legacyIds: true, ics }], fetchedAt);
+window.nativeFeed = (ics, fetchedAt) => {
+  const previous = calendarSources.find((source) => source.id === 'legacy') || {};
+  return window.nativeCalendars(
+    [{ ...previous, id: 'legacy', legacyIds: true, ics, fetchedAt }],
+    fetchedAt,
+  );
+};
 window.nativeCalendars = function (subscriptions, fetchedAt) {
-  return commit(parseCalendars(subscriptions, state.timeZone), {
+  const reconciled = reconcileSubscriptions(
+    calendarSources,
+    subscriptions,
+    fetchedAt,
+    state.timeZone,
+  );
+  commit(parseCalendars(reconciled, state.timeZone), {
     ...advancedDay(state),
     snapshotDate: localParts(fetchedAt, state.timeZone).date,
   });
+  calendarSources = reconciled;
+  return reconciled;
 };
 window.nativeDay = function () {
   const next = advancedDay(state);
   return next.today === state.today ? false : commit(data, next);
 };
 window.nativeSnapshot = function () {
-  const result = renderWallpaper(data.events, state);
+  const result = renderWallpaper(data.events, renderOptions(state));
   const candidates = buildGrid(data.events, { ...state, excludedEventIds: [] }).visible;
   return {
     revision,
@@ -182,7 +212,7 @@ async function pngBase64(svg) {
 }
 window.nativePNG = async function () {
   const currentRevision = revision;
-  const png = await pngBase64(renderWallpaper(data.events, state).svg);
+  const png = await pngBase64(renderWallpaper(data.events, renderOptions(state)).svg);
   return { revision: currentRevision, png };
 };
 window.nativePair = async function () {
