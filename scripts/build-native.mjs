@@ -13,6 +13,13 @@ const { config, seed } = await loadNativeBuildData({
   privateSeed: args.includes('--private-seed'),
 });
 const packageMetadata = JSON.parse(await readFile('package.json', 'utf8'));
+const icalMetadata = JSON.parse(await readFile('node_modules/ical.js/package.json', 'utf8'));
+const thirdPartyNotices = await readFile('THIRD-PARTY-NOTICES.txt', 'utf8');
+if (
+  !thirdPartyNotices.includes(`ICAL.js ${icalMetadata.version}\n`) ||
+  !thirdPartyNotices.includes(`https://github.com/kewisch/ical.js/tree/v${icalMetadata.version}\n`)
+)
+  throw new Error('Update THIRD-PARTY-NOTICES.txt for the installed ICAL.js version.');
 const version = packageMetadata.version;
 const bundleIdentifier = packageMetadata.wapacal?.bundleIdentifier;
 const bundleVersion = packageMetadata.wapacal?.bundleVersion;
@@ -102,6 +109,7 @@ try {
   await writeFile(`${resources}/seed.json`, JSON.stringify(seed));
   await writeFile(`${resources}/LICENSE`, await readFile('LICENSE'));
   await writeFile(`${resources}/ICAL-LICENSE`, await readFile('node_modules/ical.js/LICENSE'));
+  await writeFile(`${resources}/THIRD-PARTY-NOTICES.txt`, thirdPartyNotices);
   // File Provider can attach metadata anywhere inside the generated bundle.
   execFileSync('xattr', ['-cr', bundle]);
   try {

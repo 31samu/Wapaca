@@ -1,0 +1,18 @@
+Third-party software in Wapacal
+
+ICAL.js 2.2.1
+Copyright and contributors: Philipp Kewisch and the ICAL.js contributors.
+License: Mozilla Public License 2.0 (MPL-2.0).
+
+Wapacal includes the unmodified minified distribution of ICAL.js 2.2.1
+from the ical.js npm package, embedded in its calendar worker.
+
+The corresponding human-readable source code is available under MPL-2.0:
+https://github.com/kewisch/ical.js/tree/v2.2.1
+
+Download the source archive:
+https://github.com/kewisch/ical.js/archive/refs/tags/v2.2.1.zip
+
+The complete MPL-2.0 license is included alongside this notice as
+ICAL-LICENSE in Wapacal.app/Contents/Resources. ICAL.js retains its own
+license and copyright notices.

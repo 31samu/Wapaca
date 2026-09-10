@@ -81,3 +81,5 @@ See the [development guide](docs/development.md) for private builds, the Firefox
 ## License
 
 Copyright (C) 2026 Samuel Kremer. Wapacal is licensed under the [GNU General Public License version 3](LICENSE), GPL-3.0-only. Third-party dependencies retain their own licenses.
+
+The app includes ICAL.js under MPL-2.0. See [third-party notices and source downloads](THIRD-PARTY-NOTICES.txt). The notice and ICAL.js license are also bundled in `Wapacal.app/Contents/Resources`, accessible through Finder's **Show Package Contents**.
