@@ -19,6 +19,7 @@ const sources = await loadSnapshots(config).catch((error) => {
 let failed = 0;
 for (let index = 0; index < sources.length; index++) {
   const source = sources[index];
+  if (source.enabled === false) continue;
   try {
     const headers = {};
     if (source.ics && source.etag) headers['If-None-Match'] = source.etag;

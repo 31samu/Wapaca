@@ -314,3 +314,22 @@ test('both export appearances capture the same revision even if settings change 
   assert.equal(pair.dark, 'UE5H');
   dom.window.close();
 });
+
+test('navigating outside the default recurrence window expands events and preserves occurrence exclusions', async () => {
+  const { dom, w, snapshot } = await setup();
+  w.nativeLoad({
+    ics: calendar(
+      session('weekly', 'Repeated').replace('END:VEVENT', 'RRULE:FREQ=WEEKLY\r\nEND:VEVENT'),
+    ),
+    editor: { mode: 'month', month: '2030-09', course: '' },
+  });
+  const before = snapshot();
+  assert.ok(before.events.length >= 4);
+  const occurrence = before.events[0].uid;
+  w.nativeInclude(occurrence, false);
+  w.nativeUpdate({ month: '2035-09' });
+  assert.ok(snapshot().events.some((e) => e.date.startsWith('2035-09')));
+  w.nativeUpdate({ month: '2030-09' });
+  assert.equal(snapshot().events.find((e) => e.uid === occurrence).included, false);
+  dom.window.close();
+});

@@ -344,6 +344,7 @@
       </section>
     </main>
     <script>
+      /*__PARSER__*/
       /*__LAYOUT__*/
       const data = __WAPACAL_DATA__;
       const config = __WAPACAL_CONFIG__;
@@ -491,6 +492,8 @@
         $('module-fields').hidden = state.mode !== 'module';
         $('month-field').hidden = state.mode !== 'month';
         try {
+          if (data.subscriptions)
+            data.events = parseCalendars(data.subscriptions, config.timeZone, state).events;
           result = renderWallpaper(data.events, {
             ...state,
             systemTheme:

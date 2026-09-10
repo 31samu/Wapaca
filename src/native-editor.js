@@ -22,7 +22,13 @@ const nativeDefaults = (() => {
       : [],
   };
 })();
+let nativeAppearance;
+window.nativeAppearance = function (theme) {
+  if (!['light', 'dark'].includes(theme)) throw new Error('Invalid system appearance.');
+  nativeAppearance = theme;
+};
 function preferredTheme() {
+  if (nativeAppearance) return nativeAppearance;
   return typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches
     ? 'dark'
     : 'light';
@@ -61,9 +67,9 @@ window.nativeLoad = function (payload) {
     ? next.excludedEventIds.filter((id) => typeof id === 'string')
     : [];
   const parsed = payload.subscriptions
-    ? parseCalendars(payload.subscriptions, next.timeZone)
+    ? parseCalendars(payload.subscriptions, next.timeZone, next)
     : payload.ics
-      ? parseCalendar(payload.ics, next.timeZone)
+      ? parseCalendar(payload.ics, next.timeZone, 'auto', next)
       : { name: 'Calendar', events: [] };
   const fetchedAt =
     payload.fetchedAt ||
@@ -107,7 +113,8 @@ window.nativeUpdate = function (patch) {
     throw new Error('Choose whether to include weekends.');
   if (typeof next.name !== 'string' || !next.name.trim()) throw new Error('Enter a module name.');
   if (['name', 'start', 'end'].some((key) => Object.hasOwn(patch, key))) next.proposed = false;
-  return commit(data, next);
+  const rangeChanged = ['mode', 'month', 'start', 'end'].some((key) => next[key] !== state[key]);
+  return commit(rangeChanged ? parseCalendars(calendarSources, next.timeZone, next) : data, next);
 };
 window.nativeInclude = function (uid, included) {
   if (
@@ -122,7 +129,7 @@ window.nativeInclude = function (uid, included) {
   return commit(data, { ...state, excludedEventIds: [...excluded] });
 };
 window.nativeSources = function (subscriptions, clearCourse) {
-  const committed = commit(parseCalendars(subscriptions, state.timeZone), {
+  const committed = commit(parseCalendars(subscriptions, state.timeZone, state), {
     ...state,
     ...(clearCourse ? { course: '' } : {}),
   });
@@ -164,16 +171,16 @@ window.nativeCalendars = function (subscriptions, fetchedAt) {
     fetchedAt,
     state.timeZone,
   );
-  commit(parseCalendars(reconciled, state.timeZone), {
-    ...advancedDay(state),
-    snapshotDate: localParts(fetchedAt, state.timeZone).date,
-  });
+  const next = { ...advancedDay(state), snapshotDate: localParts(fetchedAt, state.timeZone).date };
+  commit(parseCalendars(reconciled, next.timeZone, next), next);
   calendarSources = reconciled;
   return reconciled;
 };
 window.nativeDay = function () {
   const next = advancedDay(state);
-  return next.today === state.today ? false : commit(data, next);
+  return next.today === state.today
+    ? false
+    : commit(parseCalendars(calendarSources, next.timeZone, next), next);
 };
 window.nativeSnapshot = function () {
   const result = renderWallpaper(data.events, renderOptions(state));

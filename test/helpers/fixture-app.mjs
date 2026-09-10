@@ -27,13 +27,15 @@ export function loadFixtureApp() {
     const today = '2026-09-08';
     const snapshotDate = localParts(metadata.fetchedAt, config.timeZone).date;
     const data = { ...parsed, today, snapshotDate };
-    const preview = template
-      .replace('/*__LAYOUT__*/', () => layout + '\n' + suggestions)
-      .replace('__WAPACAL_DATA__', () => scriptJson(data))
-      .replace('__WAPACAL_CONFIG__', () => scriptJson(config));
     const parser = (await readFile('src/calendar.mjs', 'utf8'))
       .replace(/^import .*$/gm, '')
       .replace(/^export /gm, '');
+    const preview = template
+      .replace('/*__PARSER__*/', () => engine + '\n' + parser)
+      .replace('/*__LAYOUT__*/', () => layout + '\n' + suggestions)
+      .replace('__WAPACAL_DATA__', () => scriptJson(data))
+      .replace('__WAPACAL_CONFIG__', () => scriptJson(config));
+
     const editor = `<!doctype html><html><body><script>${engine}\n${parser}\n${layout}\n${suggestions}\nconst config=${scriptJson(config)};\n${nativeEditor}</script></body></html>`;
     const seed = {
       subscriptionUrl: '',

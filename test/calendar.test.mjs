@@ -145,39 +145,28 @@ test('module aligns to five weeks, month can occupy six, and invalid ranges fail
     /valid/,
   );
 });
-test('unsupported recurrence is reported instead of omitted', () => {
-  assert.throws(
-    () =>
-      parseCalendar(
-        ics(
-          'DTSTART:20260908T080000Z\r\nDTEND:20260908T100000Z\r\nRRULE:FREQ=WEEKLY\r\nSUMMARY:Lecture',
-        ),
-      ),
-    /Recurring/,
-  );
-});
-test('cancellation notices without dates are omitted; ambiguous UIDs and recurrence exceptions reject the feed', () => {
+test('cancellations need no dates, exact duplicates collapse, conflicting duplicates reject', () => {
   const cancelled = parseCalendar(ics('STATUS:CANCELLED'));
   assert.deepEqual(cancelled.events, []);
   assert.deepEqual(cancelled.cancelledUids, ['test@example.com']);
   const event =
     'BEGIN:VEVENT\r\nUID:same\r\nDTSTART:20260908T080000Z\r\nDTEND:20260908T100000Z\r\nEND:VEVENT\r\n';
-  assert.throws(
-    () => parseCalendar(`BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${event}${event}END:VCALENDAR`),
-    /duplicate/,
-  );
-  assert.throws(
-    () => parseCalendar(ics('RECURRENCE-ID:20260908T080000Z\r\nSTATUS:CANCELLED')),
-    /Recurring/,
+  assert.equal(
+    parseCalendar(`BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${event}${event}END:VCALENDAR`).events.length,
+    1,
   );
   assert.throws(
     () =>
       parseCalendar(
-        ics('DTSTART:20260908T080000Z\r\nDTEND:20260908T100000Z').replace(
-          'UID:test@example.com\r\n',
-          '',
-        ),
+        `BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${event}${event.replace('080000', '090000')}END:VCALENDAR`,
       ),
+    /duplicate/,
+  );
+  const exception = parseCalendar(ics('RECURRENCE-ID:20260908T080000Z\r\nSTATUS:CANCELLED'));
+  assert.equal(exception.cancelledUids.length, 1);
+  assert.deepEqual(exception.events, []);
+  assert.throws(
+    () => parseCalendar(ics('DTSTART:20260908T080000Z').replace('UID:test@example.com\r\n', '')),
     /UID/,
   );
 });
@@ -280,4 +269,217 @@ test('every date includes its month and long titles use free row height', () => 
     assert.match(result.svg, new RegExp(`>${label}<`));
   assert.doesNotMatch(result.warnings.join(' '), /full session title/);
   assert.match(result.svg, />available<\/text>/);
+});
+
+const feed = (...events) => `BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${events.join('')}END:VCALENDAR\r\n`;
+const entry = (uid, body) => `BEGIN:VEVENT\r\nUID:${uid}\r\n${body}\r\nEND:VEVENT\r\n`;
+const parseFeed = (source, timeZone = 'Europe/Stockholm', options = {}) =>
+  parseCalendar(source, timeZone, 'generic', { today: '2026-09-10', ...options });
+
+test('weekly named-zone and floating recurrences keep their local hour across DST', () => {
+  for (const suffix of [';TZID=Europe/Stockholm', '']) {
+    const { events } = parseFeed(
+      feed(
+        entry(
+          'weekly',
+          `DTSTART${suffix}:20261018T090000\r\nDTEND${suffix}:20261018T100000\r\nRRULE:FREQ=WEEKLY;COUNT=3`,
+        ),
+      ),
+    );
+    assert.deepEqual(
+      events.map((e) => e.start),
+      ['2026-10-18T07:00:00.000Z', '2026-10-25T08:00:00.000Z', '2026-11-01T08:00:00.000Z'],
+    );
+    assert.deepEqual(
+      events.map((e) => e.startTime),
+      ['09:00', '09:00', '09:00'],
+    );
+    assert.equal(new Set(events.map((e) => e.uid)).size, 3);
+  }
+  const source = feed(entry('float', 'DTSTART:20260908T090000'));
+  assert.equal(parseFeed(source, 'America/New_York').events[0].start, '2026-09-08T13:00:00.000Z');
+});
+
+test('embedded time zones take precedence and do not leak between feeds', () => {
+  const event = entry('custom', 'DTSTART;TZID=Europe/Stockholm:20260908T090000');
+  const zone =
+    'BEGIN:VTIMEZONE\r\nTZID:Europe/Stockholm\r\nBEGIN:STANDARD\r\nDTSTART:19700101T000000\r\nTZOFFSETFROM:+0300\r\nTZOFFSETTO:+0300\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n';
+  assert.equal(parseFeed(feed(zone, event)).events[0].start, '2026-09-08T06:00:00.000Z');
+  assert.equal(parseFeed(feed(event)).events[0].start, '2026-09-08T07:00:00.000Z');
+  assert.throws(
+    () => parseFeed(feed(event.replace('Europe/Stockholm', 'Unknown/Zone'))),
+    /Unknown calendar time zone/,
+  );
+});
+
+test('explicit IANA times use first overlap and pre-gap offset; end duration stays exact', () => {
+  for (const [stamp, expected] of [
+    ['20261025T023000', '2026-10-25T00:30:00.000Z'],
+    ['20260329T023000', '2026-03-29T01:30:00.000Z'],
+  ]) {
+    assert.equal(
+      parseFeed(feed(entry('dst', `DTSTART;TZID=Europe/Stockholm:${stamp}`))).events[0].start,
+      expected,
+    );
+  }
+  const { events } = parseFeed(
+    feed(
+      entry(
+        'overnight',
+        'DTSTART;TZID=Europe/Stockholm:20261024T230000\r\nDTEND;TZID=Europe/Stockholm:20261025T040000\r\nRRULE:FREQ=WEEKLY;COUNT=2',
+      ),
+    ),
+  );
+  assert.deepEqual(
+    events.map((e) => (Date.parse(e.end) - Date.parse(e.start)) / 3600000),
+    [6, 6],
+  );
+});
+
+test('monthly rules, all-day recurrence, RDATE, EXDATE and UTC UNTIL expand', () => {
+  const monthly = parseFeed(
+    feed(entry('monthly', 'DTSTART;VALUE=DATE:20260901\r\nRRULE:FREQ=MONTHLY;COUNT=3;BYDAY=1TU')),
+  ).events;
+  assert.deepEqual(
+    monthly.map((e) => [e.start, e.end]),
+    [
+      ['2026-09-01', '2026-09-02'],
+      ['2026-10-06', '2026-10-07'],
+      ['2026-11-03', '2026-11-04'],
+    ],
+  );
+  const { events } = parseFeed(
+    feed(
+      entry(
+        'dates',
+        'DTSTART:20260908T080000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;UNTIL=20260910T080000Z\r\nRDATE:20260910T080000Z,20260912T080000Z\r\nEXDATE:20260909T080000Z',
+      ),
+    ),
+  );
+  assert.deepEqual(
+    events.map((e) => e.date),
+    ['2026-09-08', '2026-09-10', '2026-09-12'],
+  );
+  assert.ok(events.every((e) => e.endTime === '11:00'));
+});
+
+test('moved and cancelled exceptions share a series UID but have stable occurrence IDs', () => {
+  const master = entry(
+    'series',
+    'DTSTART:20260908T080000Z\r\nDTEND:20260908T090000Z\r\nRRULE:FREQ=WEEKLY;COUNT=3\r\nSUMMARY:Original',
+  );
+  const moved = entry(
+    'series',
+    'RECURRENCE-ID:20260915T080000Z\r\nDTSTART:20260916T110000Z\r\nDTEND:20260916T120000Z\r\nSUMMARY:Moved',
+  );
+  const cancelled = entry('series', 'RECURRENCE-ID:20260922T080000Z\r\nSTATUS:CANCELLED');
+  const original = parseFeed(feed(master)).events;
+  for (const source of [feed(master, moved, cancelled), feed(cancelled, moved, master)]) {
+    const parsed = parseFeed(source);
+    assert.deepEqual(
+      parsed.events.map((e) => e.date),
+      ['2026-09-08', '2026-09-16'],
+    );
+    assert.equal(parsed.events[1].uid, original[1].uid);
+    assert.equal(parsed.events[1].title, 'Moved');
+    assert.ok(parsed.cancelledUids.includes(original[2].uid));
+  }
+  const other = entry('other', 'DTSTART:20260915T080000Z\r\nRRULE:FREQ=WEEKLY;COUNT=1');
+  assert.equal(
+    parseFeed(feed(master, moved, other)).events.find((e) => e.seriesUid === 'other').date,
+    '2026-09-15',
+  );
+});
+
+test('refresh never revives removed or cancelled occurrences from history', () => {
+  const master = entry('series', 'DTSTART:20260901T080000Z\r\nRRULE:FREQ=DAILY;COUNT=3');
+  const previous = { id: 'test', url: 'https://example.com/test', ics: feed(master) };
+  const old = parseFeed(previous.ics).events;
+  const omitted = {
+    ...previous,
+    history: { version: 1, events: old },
+    ics: feed(master.replace('COUNT=3', 'COUNT=1')),
+  };
+  const [changed] = reconcileSubscriptions([previous], [omitted], '2026-09-10T12:00:00Z');
+  assert.equal(changed.history, undefined);
+  const [single] = reconcileSubscriptions(
+    [previous],
+    [{ ...previous, ics: feed(entry('series', 'DTSTART:20260901T080000Z')) }],
+    '2026-09-10T12:00:00Z',
+  );
+  assert.equal(single.history, undefined);
+  assert.equal(
+    parseCalendars([omitted], 'Europe/Stockholm', { today: '2026-09-10' }).events.length,
+    1,
+  );
+  const cancellation = { ...omitted, ics: feed(entry('series', 'STATUS:CANCELLED')) };
+  assert.equal(parseCalendars([cancellation]).events.length, 0);
+  const [cancelled] = reconcileSubscriptions([previous], [cancellation], '2026-09-10T12:00:00Z');
+  assert.equal(cancelled.history, undefined);
+});
+
+test('unbounded recurrence stops at the view window and dense feeds fail explicitly', () => {
+  const recurring = feed(entry('forever', 'DTSTART:20260908T080000Z\r\nRRULE:FREQ=WEEKLY'));
+  const events = parseFeed(recurring, 'Europe/Stockholm', {
+    from: '2030-09-01',
+    to: '2030-09-30',
+  }).events;
+  assert.ok(events.length >= 4 && events.length < 10);
+  assert.ok(events.some((e) => e.date.startsWith('2030-09')));
+  assert.throws(
+    () => parseFeed(recurring.replace('FREQ=WEEKLY', 'FREQ=SECONDLY')),
+    /expansion limit/,
+  );
+  assert.throws(
+    () =>
+      parseFeed(
+        feed(
+          entry(
+            'range',
+            'RECURRENCE-ID;RANGE=THISANDFUTURE:20260908T080000Z\r\nDTSTART:20260908T090000Z',
+          ),
+        ),
+      ),
+    /RANGE/,
+  );
+  assert.throws(
+    () =>
+      parseFeed(
+        feed(
+          entry('period', 'DTSTART:20260908T080000Z\r\nRDATE;VALUE=PERIOD:20260909T080000Z/PT1H'),
+        ),
+      ),
+    /periods/,
+  );
+});
+
+test('RDATE-only sets include DTSTART, and EXDATE can remove DTSTART itself', () => {
+  const base = 'DTSTART:20260908T080000Z\r\n';
+  assert.deepEqual(
+    parseFeed(feed(entry('rdate', base + 'RDATE:20260910T080000Z'))).events.map((e) => e.date),
+    ['2026-09-08', '2026-09-10'],
+  );
+  assert.deepEqual(parseFeed(feed(entry('exdate', base + 'EXDATE:20260908T080000Z'))).events, []);
+  assert.deepEqual(
+    parseFeed(
+      feed(entry('allday', 'DTSTART;VALUE=DATE:20260908\r\nRDATE;VALUE=DATE:20260910')),
+    ).events.map((e) => e.start),
+    ['2026-09-08', '2026-09-10'],
+  );
+});
+
+test('disabled calendars hide their events and restore stable IDs when enabled again', () => {
+  const source = {
+    id: 'optional',
+    ics: ics('DTSTART:20260908T080000Z\r\nDTEND:20260908T100000Z\r\nSUMMARY:Optional'),
+  };
+  const original = parseCalendars([source]).events;
+  assert.equal(original.length, 1);
+  const disabled = { ...source, enabled: false };
+  assert.deepEqual(parseCalendars([disabled]).events, []);
+  assert.deepEqual(parseCalendars([{ ...disabled, enabled: true }]).events, original);
+  assert.equal(
+    parseCalendars([disabled, { ...source, id: 'active' }]).events[0].sourceId,
+    'active',
+  );
 });

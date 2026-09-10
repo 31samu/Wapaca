@@ -47,6 +47,7 @@ final class StatusLabel: NSTextField {
     let settingsStatus = NSTextField(wrappingLabelWithString: "")
     let engine = CalendarEngine()
     let editorView = EditorViewController()
+    var appearanceObservation: NSKeyValueObservation?
     var previewRevision = -1
     var exporting = false
     var lastEditorError: String?
@@ -60,6 +61,7 @@ final class StatusLabel: NSTextField {
     let urlField = NSTextField()
     let sourcePicker = NSPopUpButton()
     let sourceName = NSTextField()
+    let sourceEnabled = NSButton(checkboxWithTitle: "Enable calendar", target: nil, action: nil)
     let saveSourceButton = NSButton(title: "Save & refresh", target: nil, action: nil)
     let refreshPicker = NSPopUpButton()
     let screenPicker = NSPopUpButton()
@@ -78,7 +80,8 @@ final class StatusLabel: NSTextField {
     var timer: Timer?
     var saveTimer: Timer?
     var escapeMonitor: Any?
-    var statusItemClickMonitor: Any?
+    var statusMenu: NSMenu?
+    var statusMenuClosedAt: TimeInterval = -.infinity
     var statusMenuOpen = false
     var session = URLSession(configuration: .ephemeral)
     var stateURL: URL { stateDirectory().appendingPathComponent("app-state.json") }
@@ -118,6 +121,15 @@ final class StatusLabel: NSTextField {
             }
             for key in ["subscriptionUrl", "ics", "etag", "modified"] {
                 saved.removeValue(forKey: key)
+            }
+        }
+        appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.new]) {
+            [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.ready,
+                    self.editorView.editor["theme"] as? String == "system"
+                else { return }
+                do { _ = try await self.js("return true;") } catch { self.reportEditorError(error) }
             }
         }
         NSApp.setActivationPolicy(.regular)
@@ -200,16 +212,10 @@ final class StatusLabel: NSTextField {
             tray.addItem(entry)
         }
         tray.delegate = self
-        item.menu = tray
-        statusItemClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) {
-            [weak self, weak tray] event in
-            guard let self, statusMenuOpen, let button = item.button, let window = button.window
-            else { return event }
-            let buttonFrame = window.convertToScreen(button.convert(button.bounds, to: nil))
-            guard buttonFrame.contains(NSEvent.mouseLocation) else { return event }
-            tray?.cancelTracking()
-            return nil
-        }
+        statusMenu = tray
+        item.button?.target = self
+        item.button?.action = #selector(toggleStatusMenu)
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 850),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered,
@@ -338,7 +344,30 @@ final class StatusLabel: NSTextField {
         pendingFiles.removeAll()
     }
     func menuWillOpen(_ menu: NSMenu) { statusMenuOpen = true }
-    func menuDidClose(_ menu: NSMenu) { statusMenuOpen = false }
+    func menuDidClose(_ menu: NSMenu) {
+        guard menu === statusMenu else { return }
+        statusMenuOpen = false
+        statusMenuClosedAt = ProcessInfo.processInfo.systemUptime
+        item.menu = nil
+    }
+    @objc func toggleStatusMenu() {
+        guard let menu = statusMenu, let button = item.button else { return }
+        if statusMenuOpen {
+            menu.cancelTracking()
+            return
+        }
+        // Menu tracking may deliver the closing click back to the status button.
+        // Reject that click, including a queued event, before attaching the menu again.
+        if let event = NSApp.currentEvent,
+            event.type == .leftMouseUp || event.type == .rightMouseUp,
+            event.timestamp <= statusMenuClosedAt + 0.3
+        {
+            return
+        }
+        item.menu = menu
+        button.performClick(nil)
+        item.menu = nil
+    }
     func getCompanion() -> WallpaperApp {
         if let companion { return companion }
         let controller = WallpaperApp()
@@ -429,6 +458,9 @@ final class StatusLabel: NSTextField {
         }
         sourcePicker.target = self
         sourcePicker.action = #selector(selectSource)
+        sourceEnabled.target = self
+        sourceEnabled.action = #selector(toggleSourceEnabled)
+        sourceEnabled.toolTip = "Show this calendar’s events and check for updates."
         sourceName.placeholderString = "e.g. University"
         urlField.placeholderString = "https://…"
         sourceName.setAccessibilityLabel("Calendar name")
@@ -449,7 +481,7 @@ final class StatusLabel: NSTextField {
             [
                 note("Connect calendar subscriptions to keep your timetable up to date."),
                 sourceRow, field("Calendar name", sourceName), field("Subscription URL", urlField),
-                saveRow,
+                sourceEnabled, saveRow,
             ])
         for (title, seconds) in [
             ("15 minutes", 900.0), ("30 minutes", 1800.0), ("1 hour", 3600.0), ("3 hours", 10800.0),
@@ -694,6 +726,8 @@ final class StatusLabel: NSTextField {
         let source = subscriptions.indices.contains(index) ? subscriptions[index] : [:]
         urlField.stringValue = source["url"] as? String ?? ""
         sourceName.stringValue = source["name"] as? String ?? ""
+        sourceEnabled.state = source["enabled"] as? Bool == false ? .off : .on
+        sourceEnabled.isEnabled = !source.isEmpty
         saveSourceButton.title = source.isEmpty ? "Add & refresh" : "Save & refresh"
         if ready && !fetching {
             status.stringValue =
@@ -716,9 +750,44 @@ final class StatusLabel: NSTextField {
             if sourceName.stringValue == source["name"] as? String { sourceName.stringValue = "" }
             sourcePicker.select(nil)
         }
+        sourceEnabled.state = .on
+        sourceEnabled.isEnabled = false
         saveSourceButton.title = "Add & refresh"
         settingsWindow.makeFirstResponder(urlField)
         status.stringValue = "Enter a name and subscription URL, then choose Add & refresh."
+    }
+    @objc func toggleSourceEnabled() {
+        let index = sourcePicker.indexOfSelectedItem
+        guard subscriptions.indices.contains(index) else { return }
+        guard ready, !fetching else {
+            sourceEnabled.state = subscriptions[index]["enabled"] as? Bool == false ? .off : .on
+            status.stringValue = "Wait for the current refresh to finish."
+            return
+        }
+        let enabled = sourceEnabled.state == .on
+        var sources = subscriptions
+        sources[index]["enabled"] = enabled
+        fetching = true
+        sourceEnabled.isEnabled = false
+        Task { @MainActor in
+            defer {
+                fetching = false
+                sourceEnabled.isEnabled = sourcePicker.indexOfSelectedItem >= 0
+            }
+            do {
+                _ = try await js(
+                    "return window.nativeSources(subscriptions,clearCourse)",
+                    ["subscriptions": sources, "clearCourse": false])
+                saved["subscriptions"] = sources
+                if enabled { saved["nextCheck"] = 0.0 }
+                persist()
+                status.stringValue = enabled ? "Calendar enabled." : "Calendar disabled."
+                if automatic.state == .on { await makeAndApply(force: false) }
+            } catch {
+                sourceEnabled.state = subscriptions[index]["enabled"] as? Bool == false ? .off : .on
+                status.stringValue = "Could not update calendar. \(error.localizedDescription)"
+            }
+        }
     }
     @objc func removeSource() {
         guard ready, !fetching else {
@@ -861,6 +930,7 @@ final class StatusLabel: NSTextField {
             for index in sources.indices {
                 guard generation == dataGeneration else { return }
                 let source = sources[index]
+                if source["enabled"] as? Bool == false { continue }
                 do {
                     guard let value = source["url"] as? String, let url = URL(string: value),
                         url.scheme == "https", url.host != nil

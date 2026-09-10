@@ -8,7 +8,10 @@ const config = JSON.parse(
   await readFile('config.local.json', 'utf8').catch(() => readFile('config.example.json', 'utf8')),
 );
 const subscriptions = await loadSnapshots(config);
-const parsed = parseCalendars(subscriptions, config.timeZone);
+const parsed = parseCalendars(subscriptions, config.timeZone, {
+  ...config.module,
+  today: process.env.WAPACAL_TODAY,
+});
 const metadata = {
   fetchedAt: subscriptions
     .map((source) => source.fetchedAt)
@@ -59,10 +62,28 @@ const scriptJson = (value) =>
     .replace(/\u2029/g, '\\u2029');
 const layout = (await readFile('src/layout.mjs', 'utf8')).replace(/^export /gm, '');
 const suggestions = (await readFile('src/suggestions.mjs', 'utf8')).replace(/^export /gm, '');
-const data = { ...parsed, today, snapshotDate };
+const parser = (await readFile('src/calendar.mjs', 'utf8'))
+  .replace(/^import .*$/gm, '')
+  .replace(/^export /gm, '');
+const engine = await readFile('node_modules/ical.js/dist/ical.es5.min.cjs', 'utf8');
+const data = {
+  ...parsed,
+  today,
+  snapshotDate,
+  subscriptions: subscriptions.map(({ id, name, kind, legacyIds, enabled, ics, history }) => ({
+    id,
+    name,
+    kind,
+    legacyIds,
+    enabled,
+    ics,
+    history,
+  })),
+};
 const { subscriptionUrl, subscriptions: privateSubscriptions, ...previewConfig } = config;
 const template = await readFile('src/preview.html', 'utf8');
 const html = template
+  .replace('/*__PARSER__*/', () => engine + '\n' + parser)
   .replace('/*__LAYOUT__*/', () => layout + '\n' + suggestions)
   .replace('__WAPACAL_DATA__', () => scriptJson(data))
   .replace('__WAPACAL_CONFIG__', () => scriptJson(previewConfig));

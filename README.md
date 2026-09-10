@@ -10,8 +10,8 @@ Turn your calendar into a Mac desktop wallpaper. Wapacal combines ICS calendar s
 - Refresh calendars and update your wallpaper automatically while the app runs.
 - Restore your previous wallpaper from Settings.
 
-<p align="center">
-  <img src="assets/screenshots/wapacal-editor.png" alt="Wapacal editor showing a calendar preview" width="1000">
+<p class="showcase" align="center">
+  <img src="assets/screenshots/wapacal-wallpaper.jpg" alt="A Wapacal calendar used as a Mac desktop wallpaper" width="500">
 </p>
 
 Wapacal is an early macOS app built from source.
@@ -41,21 +41,18 @@ Choose **Month** or **Module** in the sidebar. A module is a named date range, s
 
 Click **Apply wallpaper** to use it on the selected display, or **Export** to save an image. Settings also offers automatic updates and launch at login. Closing the window keeps Wapacal running in the menu bar; choose **Quit** there to stop it.
 
-<p align="center">
-  <img src="assets/screenshots/wapacal-wallpaper.png" alt="A Wapacal calendar used as a Mac desktop wallpaper" width="1000">
-</p>
-
-From the menu bar, you can reopen Wapacal, change settings, refresh and apply the wallpaper, or quit the app:
+From the menu bar, you can reopen Wapacal, change settings, refresh and apply the wallpaper, or quit the app.
 
 <p align="center">
-  <img src="assets/screenshots/wapacal-menubar-menu.png" alt="Wapacal menu bar menu" width="439">
+  <img src="assets/screenshots/wapacal-editor-and-menubar.jpg" alt="Wapacal editor showing a calendar preview with the menu bar menu open" width="500">
 </p>
 
 Your settings and cached calendars stay on your Mac under `~/Library/Application Support/com.samuelkremer.wapacal/`.
 
 ## Current limits
 
-- Feeds must use UTC times or all-day dates. Recurring events, recurrence exceptions, duplicate event IDs within a feed, and floating or named-zone times are not supported and cause the feed to be rejected.
+- Feeds support UTC times, all-day dates, named time zones, and floating times interpreted in the wallpaper's time zone. Repeating events, added/excluded dates, and individually moved or cancelled occurrences are supported. Identical duplicate records are ignored.
+- Conflicting records with the same event and occurrence ID, unknown time zones without a `VTIMEZONE` definition, `RANGE=THISANDFUTURE` exceptions, and `RDATE` periods still cause the feed to be rejected. Recurrence expansion covers the selected view and nearby years, with limits of 20,000 events and 50,000 recurrence steps per feed.
 - External displays, inactive Spaces, and older macOS versions still need live testing. Restoring Apple's dynamic or aerial wallpaper settings is not guaranteed.
 - Wapacal currently requires a direct ICS subscription URL. It does not connect directly to Apple Calendar or Google Calendar accounts.
 

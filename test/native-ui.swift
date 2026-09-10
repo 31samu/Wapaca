@@ -78,6 +78,40 @@ Task { @MainActor in
             "invalid import reports error without empty preview")
         ui.showError("")
 
+        let originalAppearance = NSApp.appearance
+        NSApp.appearance = NSAppearance(named: .aqua)
+        _ = try await editorApp.js("return window.nativeUpdate({theme: 'system'});")
+        let systemLight = ui.preview.image!.tiffRepresentation!
+        let explicitLight =
+            try await editorApp.engine.call(
+                "window.nativeUpdate({theme: 'light'}); return window.nativeSnapshot().svg;")
+            as! String
+        let systemSVG =
+            try await editorApp.engine.call(
+                "window.nativeUpdate({theme: 'system'}); return window.nativeSnapshot().svg;")
+            as! String
+        try require(systemSVG == explicitLight, "system uses AppKit light appearance")
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        let appearanceDeadline = Date().addingTimeInterval(15)
+        while ui.preview.image!.tiffRepresentation! == systemLight && Date() < appearanceDeadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        try require(
+            ui.preview.image!.tiffRepresentation! != systemLight,
+            "system preview refreshes when AppKit appearance changes")
+        let systemDark =
+            try await editorApp.engine.call(
+                "return window.nativeSnapshot().svg;") as! String
+        let explicitDark =
+            try await editorApp.engine.call(
+                "window.nativeUpdate({theme: 'dark'}); return window.nativeSnapshot().svg;")
+            as! String
+        try require(systemDark == explicitDark, "system uses AppKit dark appearance")
+        _ = try await editorApp.js("return true;")
+        NSApp.appearance = originalAppearance
+        _ = try await editorApp.js("return window.nativeUpdate({theme: 'light'});")
+        print("System appearance checks passed")
+
         // Settings reuse the original controls and state in a separate native window.
         try require(
             editorApp.urlField.window === editorApp.settingsWindow,
@@ -99,6 +133,24 @@ Task { @MainActor in
         editorApp.sourcePicker.selectItem(at: 0)
         // Restore the fixture selection without changing saved subscriptions.
         editorApp.selectSource()
+        try require(editorApp.sourceEnabled.state == .on, "existing calendars default to enabled")
+        let originalCheck = editorApp.saved["nextCheck"]
+        for enabled in [false, true] {
+            editorApp.sourceEnabled.state = enabled ? .on : .off
+            editorApp.toggleSourceEnabled()
+            let deadline = Date().addingTimeInterval(10)
+            while editorApp.fetching && Date() < deadline {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            try require(!editorApp.fetching, "calendar toggle completed")
+            try require(
+                editorApp.subscriptions[0]["enabled"] as? Bool == enabled,
+                "calendar enabled preference saved")
+            try require(
+                editorApp.editorView.events.isEmpty == !enabled,
+                "calendar toggle updates visible events")
+        }
+        editorApp.saved["nextCheck"] = originalCheck
         editorApp.status.stringValue = "Settings status check"
         try require(
             editorApp.settingsStatus.stringValue == "Settings status check",

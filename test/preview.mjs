@@ -238,3 +238,17 @@ test('Mac export freezes both appearances and event exclusions while rendering',
   for (const svg of frames) assert.doesNotMatch(svg, /Launch presentation/);
   dom.window.close();
 });
+
+test('browser preview expands subscriptions when navigating to a distant month', async () => {
+  const { preview } = await loadFixtureApp();
+  const dom = new JSDOM(preview, { runScripts: 'dangerously', url: 'https://preview.invalid' });
+  const ics =
+    'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:weekly\r\nDTSTART:20260908T080000Z\r\nRRULE:FREQ=WEEKLY\r\nSUMMARY:Repeating\r\nEND:VEVENT\r\nEND:VCALENDAR';
+  dom.window.eval(
+    `data.subscriptions = ${JSON.stringify([{ id: 'test', ics }])}; state.mode = 'month'; state.month = '2035-09'; state.course = ''; render();`,
+  );
+  assert.equal(dom.window.document.getElementById('error').textContent, '');
+  assert.match(dom.window.document.getElementById('wallpaper').innerHTML, /Repeating/);
+  assert.ok(dom.window.eval("data.events.some(event => event.date.startsWith('2035-09'))"));
+  dom.window.close();
+});

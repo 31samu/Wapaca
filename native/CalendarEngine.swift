@@ -62,7 +62,12 @@ final class CalendarEngine: NSObject, WKNavigationDelegate {
                 MainActor.assumeIsolated { self.failWorker(error) }
                 current?.resume(throwing: error)
             }
-            worker.callAsyncJavaScript(body, arguments: arguments, in: nil, in: .page) { result in
+            // A detached WKWebView can report a different color scheme from AppKit.
+            let appearance =
+                NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? "dark" : "light"
+            let script = "window.nativeAppearance('\(appearance)');\n" + body
+            worker.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .page) { result in
                 timeout.invalidate()
                 let current = pending
                 pending = nil
