@@ -91,12 +91,13 @@ export function buildGrid(events, options) {
   const last = dayAdd(range.end, 6 - weekday(range.end));
   const weeks = Math.floor((new Date(last) - new Date(first)) / 604800000) + 1;
   if (weeks > 12) throw new Error('Choose a range of 12 weeks or fewer for a readable wallpaper.');
+  const columns = options.includeWeekends === true ? 7 : 5;
   const byDay = new Map();
   const excluded = new Set(options.excludedEventIds || []);
   const visible = selectEvents(events, options.course).filter((event) => {
     if (excluded.has(event.uid)) return false;
     // The selected dates determine the rows, not which events fill those rows.
-    const days = eventDays(event, first, last).filter((day) => weekday(day) < 5);
+    const days = eventDays(event, first, last).filter((day) => weekday(day) < columns);
     days.forEach((day) => {
       if (!byDay.has(day)) byDay.set(day, []);
       byDay.get(day).push(event);
@@ -109,9 +110,9 @@ export function buildGrid(events, options) {
     last,
     weeks,
     visible,
-    columns: 5,
+    columns,
     rows: Array.from({ length: weeks }, (_, w) =>
-      Array.from({ length: 5 }, (_, d) => {
+      Array.from({ length: columns }, (_, d) => {
         const key = dayAdd(first, w * 7 + d);
         return {
           key,

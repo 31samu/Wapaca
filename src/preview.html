@@ -299,6 +299,8 @@
           <label class="check"><input type="checkbox" id="show-title" checked /> Show title</label
           ><label class="check"><input type="checkbox" id="rooms" checked /> Show rooms</label
           ><label class="check"
+            ><input type="checkbox" id="weekends" /> Include Saturdays and Sundays</label
+          ><label class="check"
             ><input type="checkbox" id="icon-space" checked /> Leave room for desktop icons</label
           >
         </fieldset>
@@ -359,6 +361,7 @@
         height: config.height,
         showTitle: config.showTitle !== false,
         rooms: true,
+        includeWeekends: config.includeWeekends === true,
         iconSpace: true,
         today: data.today,
         snapshotDate: data.snapshotDate,
@@ -389,6 +392,7 @@
       $('start').value = state.start;
       $('end').value = state.end;
       $('month').value = state.month;
+      $('weekends').checked = state.includeWeekends;
       $('snapshot').textContent = 'Calendar snapshot · ' + data.snapshotDate;
       const sizes = [
         `${state.width}x${state.height}`,
@@ -586,6 +590,7 @@
       [
         ['show-title', 'showTitle'],
         ['rooms', 'rooms'],
+        ['weekends', 'includeWeekends'],
         ['icon-space', 'iconSpace'],
       ].forEach(([id, key]) =>
         $(id).addEventListener('change', () => {

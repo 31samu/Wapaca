@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { writeFile, mkdir, mkdtemp, copyFile } from 'node:fs/promises';
+import { writeFile, readFile, mkdir, mkdtemp, copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { loadFixtureApp } from './helpers/fixture-app.mjs';
@@ -59,17 +59,35 @@ test(
     compileNative(join(temp, 'main.swift'), binary, { stdio: 'pipe' });
     execFileSync('xattr', ['-cr', bundle]);
     execFileSync('codesign', ['--force', '--sign', '-', bundle], { stdio: 'pipe' });
-    const output = execFileSync(binary, [], {
-      encoding: 'utf8',
-      timeout: 90000,
-      env: {
-        ...process.env,
-        WAPACAL_APP_SUPPORT: join(temp, 'support'),
-        WAPACAL_LEGACY_WORKSPACE: join(temp, 'legacy'),
-        WAPACAL_UI_OUTPUT: temp,
-      },
-    });
-    assert.match(output, /integration checks passed/);
+    const stdout = join(temp, 'stdout.log'),
+      stderr = join(temp, 'stderr.log');
+    await writeFile(stdout, '');
+    await writeFile(stderr, '');
+    // AppKit applications must be registered and launched through Launch Services.
+    // Starting the executable directly can make WindowServer abort it during startup.
+    execFileSync(
+      'open',
+      [
+        '-W',
+        '-n',
+        '-g',
+        '--env',
+        `WAPACAL_APP_SUPPORT=${join(temp, 'support')}`,
+        '--env',
+        `WAPACAL_LEGACY_WORKSPACE=${join(temp, 'legacy')}`,
+        '--env',
+        `WAPACAL_UI_OUTPUT=${temp}`,
+        '-o',
+        stdout,
+        '--stderr',
+        stderr,
+        bundle,
+      ],
+      { timeout: 90000 },
+    );
+    const output = await readFile(stdout, 'utf8'),
+      errors = await readFile(stderr, 'utf8');
+    assert.match(output, /integration checks passed/, errors || 'Native UI test did not finish.');
     console.log(`Native UI screenshots and exports: ${temp}`);
   },
 );

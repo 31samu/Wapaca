@@ -10,9 +10,11 @@ Turn your calendar into a Mac desktop wallpaper. Wapacal combines ICS calendar s
 - Refresh calendars and update your wallpaper automatically while the app runs.
 - Restore your previous wallpaper from Settings.
 
-Wapacal is an early macOS app built from source. It is not notarized for distribution.
+Wapacal is an early macOS app built from source.
 
-Note from maker: <br>
+Wapacal is not currently notarized. If downloadable builds are added, macOS may block the first launch. Open **System Settings → Privacy & Security** and choose **Open Anyway**.
+
+### Note from maker:
 I wanted a calendar desktop wallpaper that updates automatically, so I made it. The project was largely slopped together and I don't have experience maintaining something open source, but I expect to update the app until it has all features I'd want or fix it when it breaks. Feel free to reach out, suggest something or fork the project.
 
 ## Build and run
@@ -31,19 +33,19 @@ The default build includes no private calendars or settings. On first launch, ad
 
 ## Make your wallpaper
 
-Choose **Month** or **Module** in the sidebar. A module is a named date range, such as a course block. Use **Choose events** to hide individual events and **Appearance** to adjust the image size, theme, and layout.
+Choose **Month** or **Module** in the sidebar. A module is a named date range, such as a course block. Enable **Include Saturdays and Sundays** when you want a seven-day calendar. Use **Choose events** to hide individual events and **Appearance** to adjust the image size, theme, and layout.
 
 Click **Apply wallpaper** to use it on the selected display, or **Export** to save an image. Settings also offers automatic updates and launch at login. Closing the window keeps Wapacal running in the menu bar; choose **Quit** there to stop it.
 
-Your settings and cached calendars stay on your Mac under `~/Library/Application Support/local.wapacal.app/`.
+Your settings and cached calendars stay on your Mac under `~/Library/Application Support/com.samuelkremer.wapacal/`.
 
 ## Current limits
 
-- Wallpapers show Monday through Friday, with a maximum range of 12 weeks.
+- Wallpapers show Monday through Friday by default, with optional weekend columns and a maximum range of 12 weeks.
 - Feeds must use UTC times or all-day dates. Recurring events, recurrence exceptions, duplicate event IDs within a feed, and floating or named-zone times are not supported and cause the feed to be rejected.
-- External displays, inactive Spaces, and older macOS versions still need live testing. Restoring Apple's dynamic or aerial wallpaper settings is not guaranteed. Future setting to 'apply to all screens'?
-- bygone events can disappear from the wallpaper if the feed doesn't serve it anymore
-- you need a link to the calendar feed atm, apple/google calendar intergration would make a lot of sense
+- External displays, inactive Spaces, and older macOS versions still need live testing. Restoring Apple's dynamic or aerial wallpaper settings is not guaranteed.
+- Events can disappear after they pass if the calendar provider stops including them in the feed.
+- Wapacal currently requires a direct ICS subscription URL. It does not connect directly to Apple Calendar or Google Calendar accounts.
 
 ## Development
 

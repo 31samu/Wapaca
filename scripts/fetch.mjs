@@ -1,6 +1,10 @@
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { parseCalendars } from '../src/calendar.mjs';
-import { configuredSubscriptions, loadSnapshots } from '../src/subscriptions.mjs';
+import {
+  configuredSubscriptions,
+  loadSnapshots,
+  readCalendarResponse,
+} from '../src/subscriptions.mjs';
 await mkdir('data', { recursive: true });
 const config = JSON.parse(
   await readFile('config.local.json', 'utf8').catch(() => readFile('config.example.json', 'utf8')),
@@ -22,8 +26,7 @@ for (let index = 0; index < sources.length; index++) {
     const response = await fetch(source.url, { headers, signal: AbortSignal.timeout(30000) });
     if (response.status === 304 && source.ics) continue;
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const ics = await response.text();
-    if (Buffer.byteLength(ics) > 10_000_000) throw new Error('Calendar exceeds 10 MB');
+    const ics = await readCalendarResponse(response);
     const candidate = {
       ...source,
       ics,

@@ -165,7 +165,7 @@ final class StatusLabel: NSTextField {
         calendarItem.title = "Calendar"
         let calendarMenu = NSMenu(title: "Calendar")
         let refresh = NSMenuItem(
-            title: "Refresh calendars", action: #selector(refreshNow), keyEquivalent: "r")
+            title: "Refresh & Apply", action: #selector(refreshAndApplyNow), keyEquivalent: "r")
         refresh.target = self
         calendarMenu.addItem(refresh)
         calendarItem.submenu = calendarMenu
@@ -192,7 +192,7 @@ final class StatusLabel: NSTextField {
         let tray = NSMenu()
         for (title, action) in [
             ("Open Wapacal", #selector(show)), ("Settings…", #selector(showSettings)),
-            ("Refresh calendars", #selector(refreshNow)),
+            ("Refresh & Apply", #selector(refreshAndApplyNow)),
             ("Quit", #selector(NSApplication.terminate(_:))),
         ] {
             let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
@@ -837,7 +837,8 @@ final class StatusLabel: NSTextField {
         if nextCheck <= Date() { beginRefresh(force: false) }
     }
     @objc func refreshNow() { beginRefresh(force: true) }
-    func beginRefresh(force: Bool) {
+    @objc func refreshAndApplyNow() { beginRefresh(force: true, applyAfterRefresh: true) }
+    func beginRefresh(force: Bool, applyAfterRefresh: Bool = false) {
         guard ready, !fetching else { return }
         guard force || nextCheck <= Date() else { return }
         guard !subscriptions.isEmpty else {
@@ -867,17 +868,29 @@ final class StatusLabel: NSTextField {
                         request.setValue(
                             source["modified"] as? String, forHTTPHeaderField: "If-Modified-Since")
                     }
-                    let (data, response) = try await session.data(for: request)
+                    let (bytes, response) = try await session.bytes(for: request)
                     guard generation == dataGeneration else { return }
                     guard let http = response as? HTTPURLResponse else {
                         throw WallpaperError.invalid("Invalid response.")
                     }
                     let now = ISO8601DateFormatter().string(from: Date())
                     if http.statusCode == 200 {
-                        guard data.count <= 10_000_000,
-                            let ics = String(data: data, encoding: .utf8)
+                        guard http.expectedContentLength <= 10_000_000 else {
+                            throw WallpaperError.invalid("Calendar exceeds 10 MB.")
+                        }
+                        var data = Data()
+                        if http.expectedContentLength > 0 {
+                            data.reserveCapacity(Int(http.expectedContentLength))
+                        }
+                        for try await byte in bytes {
+                            guard data.count < 10_000_000 else {
+                                throw WallpaperError.invalid("Calendar exceeds 10 MB.")
+                            }
+                            data.append(byte)
+                        }
+                        guard let ics = String(data: data, encoding: .utf8)
                         else {
-                            throw WallpaperError.invalid("Calendar is too large or unreadable.")
+                            throw WallpaperError.invalid("Calendar is not valid UTF-8.")
                         }
                         var candidate = source
                         candidate["ics"] = ics
@@ -912,10 +925,12 @@ final class StatusLabel: NSTextField {
                 failures.isEmpty
                 ? nil
                 : "Refresh failed. \(failures.joined(separator:" ")) Saved events were kept. Retrying in 5 minutes."
-            if automatic.state == .on { await makeAndApply(force: false) }
             status.stringValue =
                 refreshFailure
                 ?? "\(sources.count) calendars checked at \(Date().formatted(date:.omitted,time:.shortened))."
+            if applyAfterRefresh || automatic.state == .on {
+                await makeAndApply(force: applyAfterRefresh)
+            }
         }
     }
     @objc func applyNow() {

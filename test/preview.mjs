@@ -74,7 +74,7 @@ test('preview switches theme, edits module dates, changes month, reveals details
     document.querySelector('aside').lastElementChild.classList.contains('export-actions'),
     true,
   );
-  assert.equal(el('weekends'), null);
+  assert.equal(el('weekends').checked, false);
   assert.match(el('wallpaper').innerHTML, /Prototyping/);
   change('theme', 'dark');
   assert.match(el('wallpaper').innerHTML, /#18231f/);
@@ -90,6 +90,9 @@ test('preview switches theme, edits module dates, changes month, reveals details
   assert.equal(document.querySelectorAll('.event').length, 5);
   assert.match(el('wallpaper').innerHTML, /September 2026/);
   assert.doesNotMatch(el('wallpaper').innerHTML, /SATURDAY|SUNDAY/);
+  el('weekends').checked = true;
+  el('weekends').dispatchEvent(new Event('change', { bubbles: true }));
+  assert.match(el('wallpaper').innerHTML, /SATURDAY.*SUNDAY/s);
   assert.match(el('event-list').textContent, /R100/);
   assert.ok(document.querySelector('.conflict'));
   change('course', 'all', 'change');

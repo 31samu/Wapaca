@@ -30,6 +30,7 @@ test('worker has no visible content, controls, web bridge, or browser persistenc
 test('saved settings, custom dimensions, unknown fields and exclusions survive load and refresh', async () => {
   const { dom, w, seed, snapshot } = await setup();
   assert.equal(snapshot().editor.showTitle, false);
+  assert.equal(snapshot().editor.includeWeekends, false);
   const uid = snapshot().events.find((event) => event.title === 'Launch presentation').uid;
   w.nativeInclude(uid, false);
   const editor = {
@@ -37,6 +38,7 @@ test('saved settings, custom dimensions, unknown fields and exclusions survive l
     name: 'Saved module',
     showTitle: true,
     rooms: false,
+    includeWeekends: true,
     theme: 'dark',
     width: 2880,
     height: 1800,
@@ -46,6 +48,8 @@ test('saved settings, custom dimensions, unknown fields and exclusions survive l
   assert.equal(snapshot().editor.name, 'Saved module');
   assert.match(snapshot().svg, />Saved module<\/text>/);
   assert.equal(snapshot().editor.rooms, false);
+  assert.equal(snapshot().editor.includeWeekends, true);
+  assert.match(snapshot().svg, />SATURDAY<.*>SUNDAY</s);
   assert.equal(snapshot().editor.width, 2880);
   w.nativeFeed(seed.ics, '2026-09-07T12:00:00Z');
   assert.doesNotMatch(snapshot().svg, /Launch presentation/);
@@ -91,6 +95,7 @@ test('invalid edits are transactional, and repairing the range permits subsequen
     { name: '' },
     { mode: 'week' },
     { theme: 'unknown' },
+    { includeWeekends: 'yes' },
     { excludedEventIds: [] },
   ]) {
     assert.throws(() => w.nativeUpdate(patch));

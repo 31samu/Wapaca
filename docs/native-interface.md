@@ -37,7 +37,7 @@ Calls run in order across asynchronous image rendering. Startup and calls have 3
 
 ## Compatibility
 
-The bundle identifier, Application Support location, editor field names, subscription IDs, event IDs, HTTP validators, selected display, refresh intervals, and recovery-file formats remain unchanged. Unknown editor fields are retained. Existing exclusions, custom image dimensions, fixed modules, historical months, and following-current-month behavior remain supported. The parser and wallpaper renderer are unchanged, including their existing ICS limitations and weekday-only layout.
+The bundle identifier is `com.samuelkremer.wapacal`. On first launch under that identifier, the app migrates data from `local.wapacal.app` and the older `local.timetable.wallpaper` location. Editor field names, subscription IDs, event IDs, HTTP validators, selected display, refresh intervals, and recovery-file formats remain compatible. Unknown editor fields are retained. Existing exclusions, custom image dimensions, fixed modules, historical months, and following-current-month behavior remain supported. The parser and wallpaper renderer retain their existing ICS limitations. The wallpaper uses five weekday columns by default and can include Saturday and Sunday.
 
 Both `.wapacal` and legacy `.timetable` imports, paired HEIC files, the existing CLI commands, and appearance mapping remain supported. The minimum deployment target is macOS 13; actual GUI execution is tested on the development Mac, not on every supported macOS release.
 

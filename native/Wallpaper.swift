@@ -176,7 +176,7 @@ func workspaceDirectory() -> URL {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
             0]
         return root.appendingPathComponent(
-            Bundle.main.bundleIdentifier ?? "local.wapacal.app", isDirectory: true)
+            Bundle.main.bundleIdentifier ?? "com.samuelkremer.wapacal", isDirectory: true)
     }
     return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(
         "output", isDirectory: true)
@@ -221,47 +221,59 @@ private struct MigrationItem {
     let destination: URL
 }
 
-func previousApplicationSupportDirectory() -> URL? {
+func previousApplicationSupportDirectories() -> [URL] {
     // An explicit workspace override is an isolated runtime, including migrations.
-    if ProcessInfo.processInfo.environment["WAPACAL_APP_SUPPORT"] != nil { return nil }
-    guard Bundle.main.bundleURL.pathExtension == "app" else { return nil }
+    if ProcessInfo.processInfo.environment["WAPACAL_APP_SUPPORT"] != nil { return [] }
+    guard Bundle.main.bundleURL.pathExtension == "app" else { return [] }
     let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    return root.appendingPathComponent("local.timetable.wallpaper", isDirectory: true)
+    return ["local.wapacal.app", "local.timetable.wallpaper"].map {
+        root.appendingPathComponent($0, isDirectory: true)
+    }
 }
 
 func migrateLegacyWorkspace() throws {
     try ensureWorkspaceDirectories()
     let files = FileManager.default
-    let candidates =
-        ([previousApplicationSupportDirectory(), legacyWorkspaceDirectory()] as [URL?]).compactMap {
-            $0
-        }
+    let candidates = previousApplicationSupportDirectories() + [legacyWorkspaceDirectory()]
     for legacy in candidates
     where legacy.standardizedFileURL != workspaceDirectory().standardizedFileURL
         && files.fileExists(atPath: legacy.path)
     {
         var items = [
             MigrationItem(
+                source: legacy.appendingPathComponent("state/app-state.json"),
+                destination: stateDirectory().appendingPathComponent("app-state.json")),
+            MigrationItem(
                 source: legacy.appendingPathComponent("app-state.json"),
                 destination: stateDirectory().appendingPathComponent("app-state.json")),
+            MigrationItem(
+                source: legacy.appendingPathComponent("wallpapers/editor-wallpaper.heic"),
+                destination: wallpapersDirectory().appendingPathComponent("editor-wallpaper.heic")),
             MigrationItem(
                 source: legacy.appendingPathComponent("editor-wallpaper.heic"),
                 destination: wallpapersDirectory().appendingPathComponent("editor-wallpaper.heic")),
         ]
-        for url in try files.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil) {
-            let name = url.lastPathComponent
-            if name.hasPrefix("restore-") || name.hasPrefix("restored-")
-                || name.hasPrefix("unavailable-")
+        for directory in [legacy, legacy.appendingPathComponent("recovery", isDirectory: true)]
+        where files.fileExists(atPath: directory.path) {
+            for url in try files.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             {
-                items.append(
-                    MigrationItem(
-                        source: url, destination: recoveryDirectory().appendingPathComponent(name)))
+                let name = url.lastPathComponent
+                if name.hasPrefix("restore-") || name.hasPrefix("restored-")
+                    || name.hasPrefix("unavailable-")
+                {
+                    items.append(
+                        MigrationItem(
+                            source: url,
+                            destination: recoveryDirectory().appendingPathComponent(name)))
+                }
             }
         }
-        let legacyApplied = legacy.appendingPathComponent("applied", isDirectory: true)
-        if files.fileExists(atPath: legacyApplied.path) {
-            for url in try files.contentsOfDirectory(
-                at: legacyApplied, includingPropertiesForKeys: nil)
+        let legacyAppliedDirectories = [
+            legacy.appendingPathComponent("wallpapers/applied", isDirectory: true),
+            legacy.appendingPathComponent("applied", isDirectory: true),
+        ]
+        for directory in legacyAppliedDirectories where files.fileExists(atPath: directory.path) {
+            for url in try files.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             {
                 items.append(
                     MigrationItem(
@@ -290,10 +302,12 @@ func migrateLegacyWorkspace() throws {
         for item in copied where !active.contains(item.source.standardizedFileURL.path) {
             try files.removeItem(at: item.source)
         }
-        if let remaining = try? files.contentsOfDirectory(atPath: legacyApplied.path),
-            remaining.isEmpty
-        {
-            try? files.removeItem(at: legacyApplied)
+        for directory in legacyAppliedDirectories {
+            if let remaining = try? files.contentsOfDirectory(atPath: directory.path),
+                remaining.isEmpty
+            {
+                try? files.removeItem(at: directory)
+            }
         }
     }
 }

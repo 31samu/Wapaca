@@ -27,7 +27,27 @@ test('native bundle ships only a headless worker, with no browser interface', as
 
 test('native bundle contains a rounded app icon at every macOS scale', async () => {
   const plist = await readFile(join(bundle, 'Contents', 'Info.plist'), 'utf8');
+  const packageMetadata = JSON.parse(await readFile('package.json', 'utf8'));
   assert.match(plist, /<key>CFBundleIconFile<\/key><string>Wapacal\.icns<\/string>/);
+  assert.match(
+    plist,
+    new RegExp(
+      `<key>CFBundleIdentifier<\\/key><string>${packageMetadata.wapacal.bundleIdentifier}<\\/string>`,
+    ),
+  );
+  assert.match(
+    plist,
+    new RegExp(
+      `<key>CFBundleShortVersionString<\\/key><string>${packageMetadata.version}<\\/string>`,
+    ),
+  );
+  assert.match(
+    plist,
+    new RegExp(
+      `<key>CFBundleVersion<\\/key><string>${packageMetadata.wapacal.bundleVersion}<\\/string>`,
+    ),
+  );
+  assert.match(plist, /com\.samuelkremer\.wapacal\.export/);
   const icon = await readFile(join(bundle, 'Contents', 'Resources', 'Wapacal.icns'));
   assert.equal(icon.subarray(0, 4).toString(), 'icns');
   assert.equal(icon.readUInt32BE(4), icon.length);
@@ -170,17 +190,22 @@ print("Cache policy checks passed")
   assert.match(execFileSync(executable, [], { encoding: 'utf8' }), /checks passed/);
 });
 
-test('legacy runtime data migrates to app support and reset preserves active recovery records', async () => {
+test('legacy and previous-bundle data migrate while reset preserves active recovery records', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wapacal-storage-'));
   const legacy = join(dir, 'legacy'),
     support = join(dir, 'support');
-  await mkdir(join(legacy, 'applied'), { recursive: true });
   await Promise.all([
-    writeFile(join(legacy, 'app-state.json'), '{}'),
-    writeFile(join(legacy, 'editor-wallpaper.heic'), 'editor'),
-    writeFile(join(legacy, 'restore-display.json'), '{}'),
-    writeFile(join(legacy, 'restored-old.json'), '{}'),
-    writeFile(join(legacy, 'applied', 'old.heic'), 'wallpaper'),
+    mkdir(join(legacy, 'state'), { recursive: true }),
+    mkdir(join(legacy, 'recovery'), { recursive: true }),
+    mkdir(join(legacy, 'wallpapers', 'applied'), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(join(legacy, 'state', 'app-state.json'), '{}'),
+    writeFile(join(legacy, 'wallpapers', 'editor-wallpaper.heic'), 'editor'),
+    writeFile(join(legacy, 'recovery', 'restore-display.json'), '{}'),
+    writeFile(join(legacy, 'recovery', 'restored-old.json'), '{}'),
+    writeFile(join(legacy, 'wallpapers', 'applied', 'old.heic'), 'wallpaper'),
+    writeFile(join(legacy, 'restore-flat.json'), '{}'),
   ]);
   const file = join(dir, 'main.swift');
   await writeFile(
@@ -191,9 +216,10 @@ try migrateLegacyWorkspace()
 let files = FileManager.default
 assert(files.fileExists(atPath: stateDirectory().appendingPathComponent("app-state.json").path))
 assert(files.fileExists(atPath: recoveryDirectory().appendingPathComponent("restore-display.json").path))
+assert(files.fileExists(atPath: recoveryDirectory().appendingPathComponent("restore-flat.json").path))
 assert(files.fileExists(atPath: recoveryDirectory().appendingPathComponent("restored-old.json").path))
 assert(files.fileExists(atPath: appliedDirectory().appendingPathComponent("old.heic").path))
-assert(!files.fileExists(atPath: legacyWorkspaceDirectory().appendingPathComponent("app-state.json").path))
+assert(!files.fileExists(atPath: legacyWorkspaceDirectory().appendingPathComponent("state/app-state.json").path))
 try resetInactiveRuntimeData()
 assert(!files.fileExists(atPath: stateDirectory().appendingPathComponent("app-state.json").path))
 assert(files.fileExists(atPath: recoveryDirectory().appendingPathComponent("restore-display.json").path))

@@ -29,6 +29,15 @@ Task { @MainActor in
         try require(ui.name.stringValue == "Prototype module", "saved module name")
         try require(ui.resolution.titleOfSelectedItem == "2880 × 1800", "custom saved image size")
         try require(ui.showTitle.state == .off, "legacy title default")
+        try require(ui.includeWeekends.state == .off, "weekends default off")
+        ui.includeWeekends.performClick(nil)
+        let weekendDeadline = Date().addingTimeInterval(15)
+        while ui.editor["includeWeekends"] as? Bool != true && Date() < weekendDeadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        try require(
+            ui.editor["includeWeekends"] as? Bool == true,
+            "weekend inclusion action persists")
         try require(
             (editorApp.saved["editor"] as? [String: Any])?["futureSetting"] as? String == "kept",
             "unknown saved setting")
@@ -42,8 +51,16 @@ Task { @MainActor in
         let mainMenu = NSApp.mainMenu!
         try require(
             editorApp.item.menu!.items.map { $0.title } == [
-                "Open Wapacal", "Settings…", "Refresh calendars", "Quit",
-            ], "compact menu bar menu")
+                "Open Wapacal", "Settings…", "Refresh & Apply", "Quit",
+            ]
+                && editorApp.item.menu!.items[2].action
+                    == #selector(editorApp.refreshAndApplyNow),
+            "compact menu bar refresh-and-apply action")
+        let calendarMenu = mainMenu.items.first { $0.title == "Calendar" }!.submenu!
+        try require(
+            calendarMenu.items.first?.title == "Refresh & Apply"
+                && calendarMenu.items.first?.action == #selector(editorApp.refreshAndApplyNow),
+            "Calendar menu refresh-and-apply action")
         let fileMenu = mainMenu.items.first { $0.title == "File" }!.submenu!
         try require(
             fileMenu.items.first?.title == "Open wallpaper…"

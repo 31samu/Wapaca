@@ -1,6 +1,6 @@
 {
   "name": "wapacal",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -25,6 +25,10 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "wapacal": {
+    "bundleIdentifier": "com.samuelkremer.wapacal",
+    "bundleVersion": 2
   },
   "dependencies": {
     "ical.js": "2.2.1",

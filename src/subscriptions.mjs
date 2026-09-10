@@ -1,5 +1,42 @@
 import { readFile } from 'node:fs/promises';
 
+export async function readCalendarResponse(response, limit = 10_000_000) {
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > limit)
+    throw new Error('Calendar exceeds 10 MB');
+  if (!response.body) return '';
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > limit) {
+        await reader.cancel();
+        throw new Error('Calendar exceeds 10 MB');
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error('Calendar is not valid UTF-8');
+  }
+}
+
 export function configuredSubscriptions(config, env = process.env) {
   const sources = env.CALENDAR_URL
     ? [{ id: 'legacy', url: env.CALENDAR_URL, name: 'Calendar', legacyIds: true }]

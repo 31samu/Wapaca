@@ -14,6 +14,7 @@ const nativeDefaults = (() => {
     showTitle: false,
     rooms: true,
     iconSpace: true,
+    includeWeekends: config.includeWeekends === true,
     today,
     snapshotDate: 'none',
     excludedEventIds: Array.isArray(config.excludedEventIds)
@@ -46,6 +47,7 @@ function commit(nextData, next) {
 }
 window.nativeLoad = function (payload) {
   const next = advancedDay({ ...nativeDefaults, ...payload.editor });
+  next.includeWeekends = next.includeWeekends === true;
   next.excludedEventIds = Array.isArray(next.excludedEventIds)
     ? next.excludedEventIds.filter((id) => typeof id === 'string')
     : [];
@@ -80,12 +82,15 @@ window.nativeUpdate = function (patch) {
     'showTitle',
     'rooms',
     'iconSpace',
+    'includeWeekends',
   ];
   if (Object.keys(patch).some((key) => !editable.includes(key)))
     throw new Error('Unknown editor setting.');
   const next = { ...state, ...patch };
   if (!['module', 'month'].includes(next.mode) || !['light', 'dark'].includes(next.theme))
     throw new Error('Choose a valid view and appearance.');
+  if (typeof next.includeWeekends !== 'boolean')
+    throw new Error('Choose whether to include weekends.');
   if (typeof next.name !== 'string' || !next.name.trim()) throw new Error('Enter a module name.');
   if (['name', 'start', 'end'].some((key) => Object.hasOwn(patch, key))) next.proposed = false;
   return commit(data, next);

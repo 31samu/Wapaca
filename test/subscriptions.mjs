@@ -5,11 +5,32 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseCalendar, parseCalendars } from '../src/calendar.mjs';
-import { configuredSubscriptions } from '../src/subscriptions.mjs';
+import { configuredSubscriptions, readCalendarResponse } from '../src/subscriptions.mjs';
 import { suggestModules } from '../src/suggestions.mjs';
 import { renderWallpaper } from '../src/layout.mjs';
 const calendar = (title = 'Deadline', extra = '') =>
   `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:same\r\nDTSTART:20260908T080000Z\r\nSUMMARY:${title}\r\nDESCRIPTION:Instructions\\nID 123\r\n${extra}END:VEVENT\r\nEND:VCALENDAR\r\n`;
+
+test('calendar response size is enforced while streaming', async () => {
+  let cancelled = false;
+  const response = new Response(
+    new ReadableStream({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(6));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }),
+  );
+  await assert.rejects(readCalendarResponse(response, 10), /exceeds/);
+  assert.equal(cancelled, true);
+  await assert.rejects(
+    readCalendarResponse(new Response('short', { headers: { 'content-length': '11' } }), 10),
+    /exceeds/,
+  );
+  assert.equal(await readCalendarResponse(new Response('calendar'), 10), 'calendar');
+});
 
 test('generic calendars use SUMMARY and preserve description; deadlines need no end time', () => {
   const {

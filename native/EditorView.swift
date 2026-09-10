@@ -32,6 +32,8 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
     let month = NSDatePicker()
     let showTitle = NSButton(checkboxWithTitle: "Show title", target: nil, action: nil)
     let rooms = NSButton(checkboxWithTitle: "Show rooms", target: nil, action: nil)
+    let includeWeekends = NSButton(
+        checkboxWithTitle: "Include Saturdays and Sundays", target: nil, action: nil)
     let iconSpace = NSButton(
         checkboxWithTitle: "Leave room for desktop icons", target: nil, action: nil)
     let exportMenu = NSPopUpButton(frame: .zero, pullsDown: true)
@@ -103,7 +105,7 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
             picker.target = self
             picker.action = #selector(changeControl(_:))
         }
-        for control in [showTitle, rooms, iconSpace] {
+        for control in [showTitle, rooms, includeWeekends, iconSpace] {
             control.target = self
             control.action = #selector(changeControl(_:))
         }
@@ -145,7 +147,8 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
         let settings = Self.stack(
             [
                 heading, field("View", mode), moduleFields, monthField,
-                field("Include", course), separator, appearanceToggle, appearanceFields!,
+                field("Include", course), includeWeekends, separator, appearanceToggle,
+                appearanceFields!,
             ], spacing: 18)
         for child in settings.arrangedSubviews {
             child.widthAnchor.constraint(equalTo: settings.widthAnchor).isActive = true
@@ -274,8 +277,8 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
 
     func setReady(_ ready: Bool) {
         for control: NSControl in [
-            mode, theme, resolution, course, name, start, end, month, showTitle, rooms, iconSpace,
-            exportMenu,
+            mode, theme, resolution, course, name, start, end, month, showTitle, rooms,
+            includeWeekends, iconSpace, exportMenu,
         ] { control.isEnabled = ready }
     }
     func showError(_ message: String) {
@@ -303,6 +306,7 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
         monthField.isHidden = mode.indexOfSelectedItem != 1
         showTitle.state = editor["showTitle"] as? Bool == true ? .on : .off
         rooms.state = editor["rooms"] as? Bool == true ? .on : .off
+        includeWeekends.state = editor["includeWeekends"] as? Bool == true ? .on : .off
         iconSpace.state = editor["iconSpace"] as? Bool == true ? .on : .off
         let size = "\(editor["width"] as? Int ?? 3024) × \(editor["height"] as? Int ?? 1964)"
         resolution.removeAllItems()
@@ -366,6 +370,7 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
         case month: patch["month"] = String(dateFormat.string(from: month.dateValue).prefix(7))
         case showTitle: patch["showTitle"] = showTitle.state == .on
         case rooms: patch["rooms"] = rooms.state == .on
+        case includeWeekends: patch["includeWeekends"] = includeWeekends.state == .on
         case iconSpace: patch["iconSpace"] = iconSpace.state == .on
         default: break
         }

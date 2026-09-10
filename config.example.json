@@ -3,6 +3,7 @@
   "timeZone": "Europe/Stockholm",
   "width": 3024,
   "height": 1964,
+  "includeWeekends": false,
   "module": {
     "name": "Example module",
     "start": "2026-10-05",

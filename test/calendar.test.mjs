@@ -35,7 +35,7 @@ test('fallback labels omit course metadata and room codes handle TimeEdit suffix
   assert.equal(event.room, 'M1099B');
   assert.equal(event.summary, 'Tutoring, 1DI300, DGVIC');
 });
-test('date-only end is exclusive and spans only visible weekdays', () => {
+test('date-only end is exclusive and weekend visibility follows the setting', () => {
   const { events } = parseCalendar(
     ics('DTSTART;VALUE=DATE:20261030\r\nDTEND;VALUE=DATE:20261103\r\nSUMMARY:Holiday'),
   );
@@ -54,8 +54,38 @@ test('date-only end is exclusive and spans only visible weekdays', () => {
     ['2026-10-30', '2026-11-02'],
   );
   assert.equal(grid.rows.flat().find((day) => day.key === '2026-11-03').events.length, 0);
+  const weekendGrid = buildGrid(events, {
+    mode: 'module',
+    start: '2026-10-26',
+    end: '2026-11-08',
+    course: '',
+    includeWeekends: true,
+  });
+  assert.equal(weekendGrid.columns, 7);
+  assert.deepEqual(
+    weekendGrid.rows
+      .flat()
+      .filter((day) => day.events.length)
+      .map((day) => day.key),
+    ['2026-10-30', '2026-10-31', '2026-11-01', '2026-11-02'],
+  );
+  const wallpaper = renderWallpaper(events, {
+    mode: 'module',
+    start: '2026-10-26',
+    end: '2026-11-08',
+    name: 'Weekend test',
+    course: '',
+    theme: 'light',
+    includeWeekends: true,
+  });
+  assert.match(wallpaper.svg, />SATURDAY<.*>SUNDAY</s);
+  assert.equal(wallpaper.placements.length, 4);
+  for (const bound of wallpaper.bounds) {
+    const left = bound.anchor === 'end' ? bound.x - bound.width : bound.x;
+    assert.ok(left >= 0 && left + bound.width <= wallpaper.logicalWidth);
+  }
 });
-test('both views fill existing weekday rows beyond the target range, without adding weeks or weekend events', () => {
+test('both views fill existing rows beyond the target range and optionally include weekend events', () => {
   const dates = [
     '2026-08-28',
     '2026-08-31',
@@ -90,6 +120,12 @@ test('both views fill existing weekday rows beyond the target range, without add
     assert.deepEqual(
       grid.rows.flat().flatMap((day) => day.events.map((event) => event.uid)),
       grid.visible.map((event) => event.uid),
+    );
+    const weekendGrid = buildGrid(events, { ...range, course: '1DI300', includeWeekends: true });
+    assert.equal(weekendGrid.columns, 7);
+    assert.deepEqual(
+      weekendGrid.visible.map((event) => event.uid),
+      ['2026-08-31', '2026-09-01', '2026-09-05', '2026-09-06', '2026-09-30', '2026-10-02'],
     );
   }
 });
