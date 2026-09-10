@@ -333,3 +333,25 @@ test('navigating outside the default recurrence window expands events and preser
   assert.equal(snapshot().events.find((e) => e.uid === occurrence).included, false);
   dom.window.close();
 });
+
+test('changing calendar colors updates wallpaper and survives refresh and reload', async () => {
+  const { dom, w, snapshot } = await setup();
+  const source = {
+    id: 'colors',
+    name: 'Colors',
+    url: 'https://example.invalid/colors',
+    ics: calendar(session('color-event', 'Colored event', '20261005')),
+  };
+  w.nativeUpdate({ mode: 'month', month: '2026-10', theme: 'light', course: '' });
+  for (const color of ['blue', '#336699']) {
+    const sources = [{ ...source, color }];
+    w.nativeSources(sources, false);
+    const expected = color === 'blue' ? '#285e9b' : color;
+    assert.match(snapshot().svg, new RegExp(`fill="${expected}"[^>]*>Colored event</text>`));
+    const refreshed = w.nativeCalendars(sources, '2026-09-10T12:00:00Z');
+    assert.equal(refreshed[0].color, color);
+    w.nativeLoad({ subscriptions: refreshed, editor: snapshot().editor });
+    assert.match(snapshot().svg, new RegExp(`fill="${expected}"[^>]*>Colored event</text>`));
+  }
+  dom.window.close();
+});

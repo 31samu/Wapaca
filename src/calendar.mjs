@@ -424,6 +424,7 @@ export function parseCalendars(subscriptions, timeZone = 'Europe/Stockholm', opt
         uid: source.legacyIds ? event.uid : JSON.stringify([source.id, event.uid]),
         sourceId: source.id,
         sourceName: source.name || parsed.name,
+        sourceColor: source.color,
         originalUid: event.uid,
       });
   }

@@ -20,6 +20,18 @@ export const palettes = {
     orange: '#e7b589',
   },
 };
+const eventColors = {
+  green: ['#356e50', '#b3d3a7'],
+  blue: ['#285e9b', '#9fc7ff'],
+  purple: ['#754398', '#d5b0f3'],
+  pink: ['#9b3e70', '#f3acd0'],
+  orange: ['#91501f', '#efbd89'],
+  red: ['#a13c38', '#f4aaa4'],
+};
+function calendarColor(value, theme) {
+  if (Object.hasOwn(eventColors, value)) return eventColors[value][theme === 'dark' ? 1 : 0];
+  return /^#[0-9a-f]{6}$/i.test(value || '') ? value : null;
+}
 export function resolveTheme(theme, systemTheme = 'light') {
   const resolved = theme === 'system' ? systemTheme : theme;
   return resolved === 'dark' ? 'dark' : 'light';
@@ -226,6 +238,37 @@ export function renderWallpaper(events, options) {
     right = options.iconSpace === false ? 76 : 158,
     gutter = 44,
     cw = (W - x - right - gutter) / grid.columns;
+  const legend = [];
+  const legendSources = new Set();
+  const snapshotLabel = options.snapshotDate
+    ? 'Snapshot ' + options.snapshotDate
+    : 'Local snapshot';
+  const conflicts = grid.visible.some((event) => event.roomConflict);
+  const conflictLabel = '* Description mentions another room. Check the event details.';
+  const legendStart = x + textWidth(snapshotLabel, 10) + 24;
+  const legendEnd = W - right - (conflicts ? textWidth(conflictLabel, 10) + 24 : 0);
+  let legendX = legendStart;
+  let legendRow = 0;
+  for (const event of grid.visible) {
+    if (!event.sourceId || legendSources.has(event.sourceId)) continue;
+    legendSources.add(event.sourceId);
+    const label = wrapText(event.sourceName || 'Calendar', legendEnd - legendStart, 11, 1).lines[0];
+    const labelWidth = textWidth(label, 11);
+    if (legendX > legendStart && legendX + labelWidth > legendEnd) {
+      legendRow++;
+      legendX = legendStart;
+    }
+    legend.push({
+      label,
+      x: legendX,
+      row: legendRow,
+      color:
+        calendarColor(event.sourceColor, resolveTheme(options.theme, options.systemTheme)) ||
+        p.text,
+    });
+    legendX += labelWidth + 24;
+  }
+  const legendHeight = legendRow * 18;
   const title =
     options.mode === 'month'
       ? new Intl.DateTimeFormat('en-GB', {
@@ -239,7 +282,7 @@ export function renderWallpaper(events, options) {
     ? wrapText(title, W - x - right - 190, 40, 2)
     : { lines: [], truncated: false };
   const tableY = (showTitle ? 108 + (titleLines.lines.length - 1) * 39 : 68) + menuBarInset,
-    bottom = H - 44,
+    bottom = H - 44 - legendHeight,
     available = bottom - tableY;
   if (available < 290)
     throw new Error('This aspect ratio leaves too little space for the calendar.');
@@ -394,8 +437,13 @@ export function renderWallpaper(events, options) {
           rowTop: rowY,
           rowBottom: rowY + rh,
         });
-        if (event.kind === 'presentation') rect(dx + 4, cy - 11, 3, card.height - 10, p.accent, 1);
-        text(dx + 12, cy, card.time, 11, p.accent, 500);
+        const eventColor = calendarColor(
+          event.sourceColor,
+          resolveTheme(options.theme, options.systemTheme),
+        );
+        if (event.kind === 'presentation')
+          rect(dx + 4, cy - 11, 3, card.height - 10, eventColor || p.accent, 1);
+        text(dx + 12, cy, card.time, 11, eventColor || p.accent, 500);
         if (card.room.lines.length) {
           if (card.stackedRoom) {
             cy += 14;
@@ -405,7 +453,7 @@ export function renderWallpaper(events, options) {
         }
         cy += 16;
         card.lines.forEach((t) => {
-          text(dx + 12, cy, t, titleSize, p.text, 500);
+          text(dx + 12, cy, t, titleSize, eventColor || p.text, 500);
           cy += lineHeight;
         });
         cy += 4;
@@ -415,24 +463,10 @@ export function renderWallpaper(events, options) {
     rowY += rh;
   });
   line(x, rowY, W - right, rowY);
-  const conflicts = grid.visible.some((event) => event.roomConflict);
-  text(
-    x,
-    H - 22,
-    options.snapshotDate ? 'Snapshot ' + options.snapshotDate : 'Local snapshot',
-    10,
-    p.muted,
-  );
-  if (conflicts)
-    text(
-      W - right,
-      H - 22,
-      '* Description mentions another room. Check the event details.',
-      10,
-      p.muted,
-      400,
-      'end',
-    );
+  const footerY = H - 22 - legendHeight;
+  for (const item of legend) text(item.x, footerY + item.row * 18, item.label, 11, item.color, 500);
+  text(x, footerY, snapshotLabel, 10, p.muted);
+  if (conflicts) text(W - right, footerY, conflictLabel, 10, p.muted, 400, 'end');
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${escapeXml(title)} timetable"><title>${escapeXml(title)}</title><desc>${escapeXml(subtitle)}. ${grid.visible.length} calendar events.</desc><g font-family="Arial, Helvetica, sans-serif">${chunks.join('')}</g></svg>`;
   return {
     svg,

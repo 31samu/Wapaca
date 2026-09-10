@@ -50,10 +50,10 @@ Task { @MainActor in
 
         let mainMenu = NSApp.mainMenu!
         try require(
-            editorApp.item.menu!.items.map { $0.title } == [
+            editorApp.statusMenu!.items.map { $0.title } == [
                 "Open Wapacal", "Settings…", "Refresh & Apply", "Quit",
             ]
-                && editorApp.item.menu!.items[2].action
+                && editorApp.statusMenu!.items[2].action
                     == #selector(editorApp.refreshAndApplyNow),
             "compact menu bar refresh-and-apply action")
         let calendarMenu = mainMenu.items.first { $0.title == "Calendar" }!.submenu!
@@ -126,6 +126,21 @@ Task { @MainActor in
             !descendants(editorApp.settingsWindow.contentView!).contains { $0 is WKWebView },
             "native Settings")
         try require(editorApp.urlField.frame.width > 450, "readable subscription URL field")
+        let settingsRoot = editorApp.settingsWindow.contentView!
+        let saveBounds = editorApp.saveSourceButton.convert(
+            editorApp.saveSourceButton.bounds, to: settingsRoot)
+        let statusBounds = editorApp.settingsStatus.convert(
+            editorApp.settingsStatus.bounds, to: settingsRoot)
+        try require(settingsRoot.bounds.contains(saveBounds), "save button inside Settings")
+        try require(!saveBounds.intersects(statusBounds), "save button does not overlap status")
+        try require(
+            !descendants(settingsRoot).contains { $0 is NSColorWell }, "custom color uses the menu")
+        let settingsImage = settingsRoot.bitmapImageRepForCachingDisplay(in: settingsRoot.bounds)!
+        settingsRoot.cacheDisplay(in: settingsRoot.bounds, to: settingsImage)
+        try settingsImage.representation(using: .png, properties: [:])!.write(
+            to:
+                URL(fileURLWithPath: ProcessInfo.processInfo.environment["WAPACAL_UI_OUTPUT"]!)
+                .appendingPathComponent("native-settings.png"))
         editorApp.addSource()
         try require(
             editorApp.settingsWindow.firstResponder is NSTextView,
@@ -134,6 +149,32 @@ Task { @MainActor in
         // Restore the fixture selection without changing saved subscriptions.
         editorApp.selectSource()
         try require(editorApp.sourceEnabled.state == .on, "existing calendars default to enabled")
+        for choice in ["Blue", "Custom", "Default"] {
+            editorApp.sourceColor.selectItem(withTitle: choice)
+            editorApp.customSourceColor = NSColor(
+                srgbRed: 0.2, green: 0.4, blue: 0.6, alpha: 1)
+            editorApp.changeSourceColor()
+            let deadline = Date().addingTimeInterval(10)
+            while editorApp.fetching && Date() < deadline {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            try require(!editorApp.fetching, "calendar color change completed")
+            let expected = choice == "Custom" ? "#336699" : choice.lowercased()
+            try require(
+                editorApp.subscriptions[0]["color"] as? String == expected, "calendar color saved")
+            let snapshot =
+                try await editorApp.js("return window.nativeSnapshot()", updates: false)
+                as! [String: Any]
+            let svg = snapshot["svg"] as! String
+            if choice != "Default" {
+                try require(
+                    svg.contains(choice == "Blue" ? "#285e9b" : "#336699"),
+                    "selected color reaches wallpaper SVG")
+            }
+            editorApp.selectSource()
+            try require(
+                editorApp.sourceColor.titleOfSelectedItem == choice, "calendar color restored")
+        }
         let originalCheck = editorApp.saved["nextCheck"]
         for enabled in [false, true] {
             editorApp.sourceEnabled.state = enabled ? .on : .off
@@ -170,6 +211,7 @@ Task { @MainActor in
             "Settings remains usable after editor closes")
         editorApp.show()
         editorApp.showSettings()
+        try await Task.sleep(nanoseconds: 100_000_000)
         editorApp.closeWindow()
         try require(
             !editorApp.settingsWindow.isVisible && editorApp.window.isVisible,

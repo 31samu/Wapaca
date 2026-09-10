@@ -39,6 +39,8 @@ The default build includes no private calendars or settings. On first launch, ad
 
 Choose **Month** or **Module** in the sidebar. A module is a named date range, such as a course block. Enable **Include Saturdays and Sundays** when you want a seven-day calendar. Use **Choose events** to hide individual events and **Appearance** to adjust the image size, theme, and layout.
 
+In **Settings → Calendars**, choose an **Event color** for each subscription. Changes save and update the preview immediately. Preset colors adjust for light and dark appearance; **Custom** opens the color picker to choose an exact color for both. The wallpaper footer lists included calendars in their colors. Click **Apply wallpaper** to update your desktop, or enable automatic updates. Choose **Default** to use the standard theme colors.
+
 Click **Apply wallpaper** to use it on the selected display, or **Export** to save an image. Settings also offers automatic updates and launch at login. Closing the window keeps Wapacal running in the menu bar; choose **Quit** there to stop it.
 
 From the menu bar, you can reopen Wapacal, change settings, refresh and apply the wallpaper, or quit the app.

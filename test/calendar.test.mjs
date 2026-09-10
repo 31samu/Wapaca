@@ -483,3 +483,51 @@ test('disabled calendars hide their events and restore stable IDs when enabled a
     'active',
   );
 });
+
+test('calendar colors reach event titles in both themes and unknown colors use the default', () => {
+  const sources = ['blue', 'purple', '"/><script>', '#336699'].map((color, index) => ({
+    id: String(index),
+    color,
+    ics: ics(`DTSTART:20261005T080000Z\r\nDTEND:20261005T090000Z\r\nSUMMARY:Calendar ${index}`),
+  }));
+  const { events } = parseCalendars(sources);
+  for (const [theme, colors] of [
+    ['light', ['#285e9b', '#754398', '#263b35', '#336699']],
+    ['dark', ['#9fc7ff', '#d5b0f3', '#e4e9dd', '#336699']],
+  ]) {
+    const { svg } = renderWallpaper(events, {
+      mode: 'month',
+      month: '2026-10',
+      theme,
+      course: '',
+    });
+    colors.forEach((color, index) => {
+      assert.match(svg, new RegExp(`fill="${color}"[^>]*>Calendar ${index}</text>`));
+    });
+    assert.doesNotMatch(svg, /<script>/);
+  }
+});
+
+test('wallpaper legend names only included calendars and reserves footer space', () => {
+  const sources = ['blue', '#336699', 'red'].map((color, index) => ({
+    id: String(index),
+    name: `Source ${index} & calendar`,
+    color,
+    enabled: index !== 2,
+    ics: ics('DTSTART:20261005T080000Z\r\nDTEND:20261005T090000Z\r\nSUMMARY:Event'),
+  }));
+  const { events } = parseCalendars(sources);
+  const options = { mode: 'month', month: '2026-10', theme: 'light', course: '' };
+  const result = renderWallpaper(events, options);
+  assert.match(result.svg, /fill="#285e9b"[^>]*>Source 0 &amp; calendar<\/text>/);
+  assert.match(result.svg, /fill="#336699"[^>]*>Source 1 &amp; calendar<\/text>/);
+  assert.doesNotMatch(result.svg, /Source 2/);
+  const footer = result.bounds.find((item) => item.text === 'Source 0 & calendar');
+  assert.ok(result.placements.every((item) => item.bottom < footer.y - footer.size));
+  const snapshot = result.bounds.find((item) => item.text === 'Local snapshot');
+  assert.equal(footer.y, snapshot.y);
+  assert.ok(footer.x > snapshot.x + snapshot.width);
+  assert.equal(footer.y, result.logicalHeight - 22);
+  const excluded = renderWallpaper(events, { ...options, excludedEventIds: [events[1].uid] });
+  assert.doesNotMatch(excluded.svg, /Source 1/);
+});

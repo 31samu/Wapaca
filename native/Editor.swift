@@ -61,6 +61,11 @@ final class StatusLabel: NSTextField {
     let urlField = NSTextField()
     let sourcePicker = NSPopUpButton()
     let sourceName = NSTextField()
+    let sourceColor = NSPopUpButton()
+    var customSourceColor = NSColor.systemBlue
+    let sourceColorNames = [
+        "Default", "Green", "Blue", "Purple", "Pink", "Orange", "Red", "Custom",
+    ]
     let sourceEnabled = NSButton(checkboxWithTitle: "Enable calendar", target: nil, action: nil)
     let saveSourceButton = NSButton(title: "Save & refresh", target: nil, action: nil)
     let refreshPicker = NSPopUpButton()
@@ -418,7 +423,7 @@ final class StatusLabel: NSTextField {
     }
     func buildSettingsWindow() {
         settingsWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 530),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 570),
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         settingsWindow.title = "Wapacal Settings"
         settingsWindow.center()
@@ -445,6 +450,8 @@ final class StatusLabel: NSTextField {
             stack.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
                 stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 22),
+                stack.bottomAnchor.constraint(
+                    lessThanOrEqualTo: content.bottomAnchor, constant: -22),
                 stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 22),
                 stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -22),
             ])
@@ -461,6 +468,12 @@ final class StatusLabel: NSTextField {
         sourceEnabled.target = self
         sourceEnabled.action = #selector(toggleSourceEnabled)
         sourceEnabled.toolTip = "Show this calendar’s events and check for updates."
+        sourceColor.addItems(withTitles: sourceColorNames)
+        sourceColor.target = self
+        sourceColor.action = #selector(selectSourceColor)
+        sourceColor.setAccessibilityLabel("Event color")
+        sourceColor.toolTip =
+            "Color for this calendar’s events. Presets adapt to appearance. Choose Custom to open the color picker."
         sourceName.placeholderString = "e.g. University"
         urlField.placeholderString = "https://…"
         sourceName.setAccessibilityLabel("Calendar name")
@@ -481,6 +494,7 @@ final class StatusLabel: NSTextField {
             [
                 note("Connect calendar subscriptions to keep your timetable up to date."),
                 sourceRow, field("Calendar name", sourceName), field("Subscription URL", urlField),
+                field("Event color", sourceColor),
                 sourceEnabled, saveRow,
             ])
         for (title, seconds) in [
@@ -722,10 +736,22 @@ final class StatusLabel: NSTextField {
         selectSource()
     }
     @objc func selectSource() {
+        NSColorPanel.shared.orderOut(nil)
         let index = sourcePicker.indexOfSelectedItem
         let source = subscriptions.indices.contains(index) ? subscriptions[index] : [:]
         urlField.stringValue = source["url"] as? String ?? ""
         sourceName.stringValue = source["name"] as? String ?? ""
+        let color = source["color"] as? String ?? "default"
+        if color.hasPrefix("#"), color.count == 7, let rgb = UInt32(color.dropFirst(), radix: 16) {
+            sourceColor.selectItem(withTitle: "Custom")
+            customSourceColor = NSColor(
+                srgbRed: CGFloat((rgb >> 16) & 255) / 255,
+                green: CGFloat((rgb >> 8) & 255) / 255,
+                blue: CGFloat(rgb & 255) / 255, alpha: 1)
+        } else {
+            sourceColor.selectItem(
+                at: sourceColorNames.firstIndex { $0.lowercased() == color } ?? 0)
+        }
         sourceEnabled.state = source["enabled"] as? Bool == false ? .off : .on
         sourceEnabled.isEnabled = !source.isEmpty
         saveSourceButton.title = source.isEmpty ? "Add & refresh" : "Save & refresh"
@@ -738,6 +764,7 @@ final class StatusLabel: NSTextField {
         }
     }
     @objc func addSource() {
+        NSColorPanel.shared.orderOut(nil)
         let index = sourcePicker.indexOfSelectedItem
         if subscriptions.indices.contains(index) {
             let source = subscriptions[index]
@@ -750,11 +777,71 @@ final class StatusLabel: NSTextField {
             if sourceName.stringValue == source["name"] as? String { sourceName.stringValue = "" }
             sourcePicker.select(nil)
         }
+        sourceColor.selectItem(at: 0)
         sourceEnabled.state = .on
         sourceEnabled.isEnabled = false
         saveSourceButton.title = "Add & refresh"
         settingsWindow.makeFirstResponder(urlField)
         status.stringValue = "Enter a name and subscription URL, then choose Add & refresh."
+    }
+    var selectedSourceColor: String {
+        guard sourceColor.titleOfSelectedItem == "Custom" else {
+            return (sourceColor.titleOfSelectedItem ?? "Default").lowercased()
+        }
+        let color = customSourceColor.usingColorSpace(.sRGB) ?? .systemBlue
+        return String(
+            format: "#%02x%02x%02x", Int((color.redComponent * 255).rounded()),
+            Int((color.greenComponent * 255).rounded()), Int((color.blueComponent * 255).rounded()))
+    }
+    @objc func selectSourceColor() {
+        if sourceColor.titleOfSelectedItem == "Custom" {
+            let panel = NSColorPanel.shared
+            panel.setTarget(self)
+            panel.setAction(#selector(customColorChanged))
+            panel.showsAlpha = false
+            panel.isContinuous = false
+            panel.color = customSourceColor
+            panel.makeKeyAndOrderFront(nil)
+        } else {
+            NSColorPanel.shared.orderOut(nil)
+            changeSourceColor()
+        }
+    }
+    @objc func customColorChanged(_ panel: NSColorPanel) {
+        guard sourceColor.titleOfSelectedItem == "Custom" else { return }
+        customSourceColor = panel.color
+        changeSourceColor()
+    }
+    @objc func changeSourceColor() {
+        let index = sourcePicker.indexOfSelectedItem
+        guard subscriptions.indices.contains(index) else { return }
+        guard ready, !fetching else {
+            selectSource()
+            status.stringValue = "Wait for the current refresh to finish."
+            return
+        }
+        var sources = subscriptions
+        sources[index]["color"] = selectedSourceColor
+        fetching = true
+        pendingEdits += 1
+        Task { @MainActor in
+            do {
+                _ = try await js(
+                    "return window.nativeSources(subscriptions,clearCourse)",
+                    ["subscriptions": sources, "clearCourse": false])
+                saved["subscriptions"] = sources
+                persist()
+                status.stringValue =
+                    "Calendar color saved. Choose Apply wallpaper to update your desktop."
+            } catch {
+                selectSource()
+                status.stringValue =
+                    "Could not change calendar color. \(error.localizedDescription)"
+            }
+            fetching = false
+            pendingEdits -= 1
+            if automatic.state == .on { await makeAndApply(force: false) }
+        }
     }
     @objc func toggleSourceEnabled() {
         let index = sourcePicker.indexOfSelectedItem
@@ -853,6 +940,7 @@ final class StatusLabel: NSTextField {
         let name = sourceName.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         source["url"] = value
         source["name"] = name.isEmpty ? host : name
+        source["color"] = selectedSourceColor
         source["kind"] =
             host == "timeedit.net" || host.hasSuffix(".timeedit.net") ? "timeedit" : "generic"
         if adding { sources.append(source) } else { sources[index] = source }
