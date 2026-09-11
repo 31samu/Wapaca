@@ -217,15 +217,22 @@ async function pngBase64(svg) {
     URL.revokeObjectURL(url);
   }
 }
-window.nativePNG = async function () {
+window.nativePNG = async function (theme) {
   const currentRevision = revision;
-  const png = await pngBase64(renderWallpaper(data.events, renderOptions(state)).svg);
+  const png = await pngBase64(
+    renderWallpaper(data.events, renderOptions(theme ? { ...state, theme } : state)).svg,
+  );
   return { revision: currentRevision, png };
 };
-window.nativePair = async function () {
+window.nativePair = async function (size = {}) {
   // Capture both SVGs before yielding so edits cannot mix two different calendars.
-  const lightSVG = renderWallpaper(data.events, { ...state, theme: 'light' }).svg;
-  const darkSVG = renderWallpaper(data.events, { ...state, theme: 'dark' }).svg;
+  const options = {
+    ...state,
+    width: size.width ?? state.width,
+    height: size.height ?? state.height,
+  };
+  const lightSVG = renderWallpaper(data.events, { ...options, theme: 'light' }).svg;
+  const darkSVG = renderWallpaper(data.events, { ...options, theme: 'dark' }).svg;
   const name = state.name;
   return { version: 1, name, light: await pngBase64(lightSVG), dark: await pngBase64(darkSVG) };
 };

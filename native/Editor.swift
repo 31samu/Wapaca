@@ -43,8 +43,18 @@ final class StatusLabel: NSTextField {
 {
     var window: NSWindow!
     var settingsWindow: NSWindow!
+    var aboutWindow: NSWindow?
     let settingsTabs = NSTabView()
     let settingsStatus = NSTextField(wrappingLabelWithString: "")
+    let wallpaperSharingWarning = NSStackView()
+    var wallpaperWarningHeight: NSLayoutConstraint?
+    let wallpaperSharingMessage = NSTextField(
+        wrappingLabelWithString:
+            "Wallpaper Apply is blocked. Turn off “Show on all Spaces” in macOS Wallpaper settings so Wapacal can update displays separately."
+    )
+    lazy var wallpaperSettingsButton = NSButton(
+        title: "Open Wallpaper Settings…", target: self,
+        action: #selector(openWallpaperSettings))
     let engine = CalendarEngine()
     let editorView = EditorViewController()
     var appearanceObservation: NSKeyValueObservation?
@@ -81,6 +91,7 @@ final class StatusLabel: NSTextField {
     var refreshFailure: String?
     var rendering = false
     var rerender = false
+    var displaySelectionGeneration = 0
     var dataGeneration = 0
     var timer: Timer?
     var saveTimer: Timer?
@@ -142,6 +153,11 @@ final class StatusLabel: NSTextField {
         let appItem = NSMenuItem()
         menu.addItem(appItem)
         let appMenu = NSMenu(title: "Wapacal")
+        let about = NSMenuItem(
+            title: "About Wapacal", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        appMenu.addItem(about)
+        appMenu.addItem(.separator())
         let quit = NSMenuItem(
             title: "Quit Wapacal", action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q")
@@ -161,6 +177,15 @@ final class StatusLabel: NSTextField {
             title: "Open wallpaper…", action: #selector(openExport), keyEquivalent: "o")
         open.target = self
         fileMenu.addItem(open)
+        fileMenu.addItem(.separator())
+        let exportItem = NSMenuItem(title: "Export", action: nil, keyEquivalent: "")
+        let exports = NSMenu(title: "Export")
+        _ = editorView.view
+        for item in editorView.exportMenu.menu!.items.dropFirst() {
+            exports.addItem(item.copy() as! NSMenuItem)
+        }
+        exportItem.submenu = exports
+        fileMenu.addItem(exportItem)
         fileItem.submenu = fileMenu
         menu.addItem(fileItem)
 
@@ -241,18 +266,40 @@ final class StatusLabel: NSTextField {
         let apply = NSButton(title: "Apply wallpaper", target: self, action: #selector(applyNow))
         apply.bezelStyle = .rounded
         apply.bezelColor = .controlAccentColor
+        let calendars = NSButton(
+            title: "Calendars…", target: self, action: #selector(showCalendars))
+        calendars.image = NSImage(systemSymbolName: "calendar", accessibilityDescription: nil)
+        calendars.imagePosition = .imageLeading
+        calendars.toolTip = "Add and manage your calendars."
         let header = EditorViewController.stack(
             [
                 displayLabel, screenPicker, spacer,
                 NSButton(title: "Refresh", target: self, action: #selector(refreshNow)),
-                NSButton(title: "Settings…", target: self, action: #selector(showSettings)),
+                calendars,
                 editorView.exportMenu, apply,
             ], vertical: false, spacing: 10)
         header.distribution = .fill
+        wallpaperSharingMessage.font = .systemFont(ofSize: 12)
+        wallpaperSharingMessage.textColor = .labelColor
+        wallpaperSharingMessage.setContentCompressionResistancePriority(
+            .defaultLow, for: .horizontal)
+        let warningIcon = NSImageView(
+            image: NSImage(
+                systemSymbolName: "exclamationmark.triangle.fill",
+                accessibilityDescription: "Wallpaper setting needs attention")!)
+        warningIcon.contentTintColor = .systemOrange
+        wallpaperSharingWarning.orientation = .horizontal
+        wallpaperSharingWarning.alignment = .centerY
+        wallpaperSharingWarning.spacing = 10
+        for child in [warningIcon, wallpaperSharingMessage, wallpaperSettingsButton] {
+            wallpaperSharingWarning.addArrangedSubview(child)
+        }
+        wallpaperWarningHeight = wallpaperSharingWarning.heightAnchor.constraint(equalToConstant: 0)
+        wallpaperWarningHeight?.isActive = true
         status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
         status.maximumNumberOfLines = 2
-        for child in [header, editorView.view, status] {
+        for child in [header, wallpaperSharingWarning, editorView.view, status] {
             root.addSubview(child)
             child.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -262,7 +309,11 @@ final class StatusLabel: NSTextField {
             header.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
             header.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
             header.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
-            editorView.view.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
+            wallpaperSharingWarning.topAnchor.constraint(equalTo: header.bottomAnchor),
+            wallpaperSharingWarning.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            wallpaperSharingWarning.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            editorView.view.topAnchor.constraint(
+                equalTo: wallpaperSharingWarning.bottomAnchor, constant: 14),
             editorView.view.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
             editorView.view.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
             editorView.view.bottomAnchor.constraint(equalTo: status.topAnchor, constant: -10),
@@ -271,22 +322,8 @@ final class StatusLabel: NSTextField {
             status.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
             status.heightAnchor.constraint(equalToConstant: 30),
         ])
-        editorView.onChange = { [weak self] patch in
-            guard let self, ready else { return }
-            pendingEdits += 1
-            let generation = dataGeneration
-            Task { @MainActor in
-                defer { self.pendingEdits -= 1 }
-                guard generation == self.dataGeneration else { return }
-                do {
-                    _ = try await self.js("return window.nativeUpdate(patch)", ["patch": patch])
-                    if patch["mode"] as? String == "module", patch["proposed"] as? Bool == false {
-                        self.editorView.closeDetails()
-                    }
-                    self.scheduleEditorSave()
-                } catch { self.reportEditorError(error) }
-            }
-        }
+        refreshWallpaperSharingWarning()
+        editorView.onChange = { [weak self] patch in self?.queueEditorPatch(patch) }
         editorView.onInclude = { [weak self] uid, included in
             guard let self, ready else { return }
             pendingEdits += 1
@@ -302,7 +339,10 @@ final class StatusLabel: NSTextField {
                 } catch { self.reportEditorError(error) }
             }
         }
-        editorView.onExport = { [weak self] heic in self?.exportImage(heic: heic) }
+        editorView.canExport = { [weak self] in self?.ready == true && self?.exporting == false }
+        editorView.onExport = { [weak self] heic, theme in
+            self?.exportImage(heic: heic, theme: theme)
+        }
         engine.onFailure = { [weak self] error in
             self?.ready = false
             self?.workerStarted = false
@@ -311,6 +351,8 @@ final class StatusLabel: NSTextField {
         }
         screenPicker.target = self
         screenPicker.action = #selector(changeScreen)
+        editorView.displayResolution.target = self
+        editorView.displayResolution.action = #selector(useDisplayResolution)
         updateScreens()
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.keyCode == 53, let window = self?.window, NSApp.keyWindow === window else {
@@ -336,6 +378,7 @@ final class StatusLabel: NSTextField {
                 _ = try await js("return window.nativeLoad(payload)", ["payload": saved])
                 ready = true
                 editorView.setReady(true)
+                updateDisplayResolution()
                 persist()
                 status.stringValue = "Saved calendar loaded. Your edits are saved automatically."
                 tick()
@@ -347,6 +390,48 @@ final class StatusLabel: NSTextField {
         show()
         for file in pendingFiles { openExportFile(file) }
         pendingFiles.removeAll()
+    }
+    func queueEditorPatch(_ patch: [String: Any], automaticApply: Bool = true) {
+        guard ready else { return }
+        let selectionGeneration = displaySelectionGeneration
+        if let width = patch["width"] as? Int, let height = patch["height"] as? Int,
+            (1280...7680).contains(width), (720...4320).contains(height),
+            let selection = saved["screen"] as? String
+        {
+            var sizes = saved["displaySizes"] as? [String: [String: Int]] ?? [:]
+            sizes[selection] = ["width": width, "height": height]
+            saved["displaySizes"] = sizes
+        }
+        pendingEdits += 1
+        let generation = dataGeneration
+        Task { @MainActor in
+            defer { self.pendingEdits -= 1 }
+            guard generation == self.dataGeneration else { return }
+            do {
+                _ = try await self.js("return window.nativeUpdate(patch)", ["patch": patch])
+                if patch["mode"] as? String == "module", patch["proposed"] as? Bool == false {
+                    self.editorView.closeDetails()
+                }
+                self.scheduleEditorSave(
+                    automaticApply: automaticApply
+                        && selectionGeneration == self.displaySelectionGeneration)
+            } catch { self.reportEditorError(error) }
+        }
+    }
+    func showWallpaperSharingWarning(_ shared: Bool) {
+        wallpaperSharingWarning.isHidden = !shared
+        wallpaperWarningHeight?.constant = shared ? 56 : 0
+    }
+    func refreshWallpaperSharingWarning() {
+        showWallpaperSharingWarning(wallpaperSharesAllSpacesAndDisplays())
+    }
+    func applicationDidBecomeActive(_ notification: Notification) {
+        refreshWallpaperSharingWarning()
+        if ready { updateDisplayResolution() }
+    }
+    @objc func openWallpaperSettings() {
+        NSWorkspace.shared.open(
+            URL(string: "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension")!)
     }
     func menuWillOpen(_ menu: NSMenu) { statusMenuOpen = true }
     func menuDidClose(_ menu: NSMenu) {
@@ -409,11 +494,107 @@ final class StatusLabel: NSTextField {
     @objc func closeWindow() { NSApp.keyWindow?.performClose(nil) }
     func windowWillClose(_ notification: Notification) {
         let closing = notification.object as? NSWindow
-        if ![window, settingsWindow, companion?.window].compactMap({ $0 }).contains(where: {
-            $0 !== closing && $0.isVisible
-        }) {
+        if ![window, settingsWindow, aboutWindow, companion?.window].compactMap({ $0 }).contains(
+            where: {
+                $0 !== closing && $0.isVisible
+            })
+        {
             NSApp.setActivationPolicy(.accessory)
         }
+    }
+    @objc func showCalendars() {
+        settingsTabs.selectTabViewItem(withIdentifier: "calendars")
+        showSettings()
+    }
+    @objc func showAbout() {
+        if aboutWindow == nil {
+            let panel = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 440, height: 480),
+                styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            panel.title = "About Wapacal"
+            panel.titleVisibility = .hidden
+            panel.titlebarAppearsTransparent = true
+            panel.isReleasedWhenClosed = false
+            panel.delegate = self
+            let content = panel.contentView!
+            func label(_ text: String, size: CGFloat, secondary: Bool = false) -> NSTextField {
+                let field = NSTextField(wrappingLabelWithString: text)
+                field.alignment = .center
+                field.font = .systemFont(ofSize: size)
+                field.textColor = secondary ? .secondaryLabelColor : .labelColor
+                return field
+            }
+            let icon = NSImageView(image: NSApp.applicationIconImage)
+            icon.imageScaling = .scaleProportionallyUpOrDown
+            NSLayoutConstraint.activate([
+                icon.widthAnchor.constraint(equalToConstant: 88),
+                icon.heightAnchor.constraint(equalToConstant: 88),
+            ])
+            let name = label("Wapacal", size: 26)
+            name.font = .systemFont(ofSize: 26, weight: .bold)
+            let version =
+                Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+            let versionText =
+                version.map { "Version \($0)" + (build.map { " (\($0))" } ?? "") }
+                ?? "Development build"
+            let heading = EditorViewController.stack(
+                [
+                    name, label(versionText, size: 12, secondary: true),
+                ], spacing: 5)
+            heading.alignment = .centerX
+            let description = label("Turn your calendar into a\nMac desktop wallpaper.", size: 15)
+            let author = label("Created by Samuel Kremer", size: 12, secondary: true)
+            let license = label(
+                "Free software under GNU GPL version 3.\nYou may redistribute and modify it under this license.\nThis software comes without any warranty.",
+                size: 11, secondary: true)
+            let links = EditorViewController.stack([], vertical: false, spacing: 20)
+            for (title, url) in [
+                ("GitHub", URL(string: "https://github.com/31samu/Wapacal")),
+                ("License", Bundle.main.url(forResource: "LICENSE", withExtension: nil)),
+                (
+                    "Third-party notices",
+                    Bundle.main.url(forResource: "THIRD-PARTY-NOTICES.txt", withExtension: nil)
+                ),
+            ] {
+                guard let url else { continue }
+                let button = NSButton(
+                    title: title, target: self, action: #selector(openAboutLink(_:)))
+                button.identifier = NSUserInterfaceItemIdentifier(url.absoluteString)
+                button.bezelStyle = .inline
+                button.isBordered = false
+                button.contentTintColor = .linkColor
+                links.addArrangedSubview(button)
+            }
+            let copyright = label(
+                Bundle.main.object(forInfoDictionaryKey: "NSHumanReadableCopyright") as? String
+                    ?? "Copyright © 2026 Samuel Kremer",
+                size: 11, secondary: true)
+            let stack = EditorViewController.stack(
+                [
+                    icon, heading, description, author, license, links, copyright,
+                ], spacing: 20)
+            stack.alignment = .centerX
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            content.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
+                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 32),
+                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -32),
+                stack.bottomAnchor.constraint(
+                    lessThanOrEqualTo: content.bottomAnchor, constant: -28),
+                license.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            ])
+            panel.center()
+            aboutWindow = panel
+        }
+        NSApp.setActivationPolicy(.regular)
+        aboutWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    @objc func openAboutLink(_ sender: NSButton) {
+        guard let value = sender.identifier?.rawValue, let url = URL(string: value) else { return }
+        NSWorkspace.shared.open(url)
     }
     @objc func showSettings() {
         window.makeFirstResponder(nil)
@@ -469,6 +650,7 @@ final class StatusLabel: NSTextField {
         sourceEnabled.action = #selector(toggleSourceEnabled)
         sourceEnabled.toolTip = "Show this calendar’s events and check for updates."
         sourceColor.addItems(withTitles: sourceColorNames)
+        updateSourceColorSwatches()
         sourceColor.target = self
         sourceColor.action = #selector(selectSourceColor)
         sourceColor.setAccessibilityLabel("Event color")
@@ -527,7 +709,7 @@ final class StatusLabel: NSTextField {
                     [
                         automatic,
                         note(
-                            "Updates the selected display when calendars or your edits change. Wapacal must be running."
+                            "Updates the selected display, or all connected displays, when calendars or your edits change. Wapacal must be running."
                         ), login,
                     ], spacing: 10),
                 separator,
@@ -537,7 +719,7 @@ final class StatusLabel: NSTextField {
                             title: "Restore previous wallpaper", target: self,
                             action: #selector(restore)),
                         note(
-                            "Restores the display selected in the main window and pauses automatic updates."
+                            "Restores the selected display, or all connected displays, and pauses automatic updates."
                         ),
                         NSButton(
                             title: "Reset application data…", target: self,
@@ -587,21 +769,115 @@ final class StatusLabel: NSTextField {
             screenPicker.addItem(withTitle: screen.localizedName)
             screenPicker.lastItem?.representedObject = screenID(screen)
         }
-        if let index = NSScreen.screens.firstIndex(where: { screenID($0) == previous }) {
+        screenPicker.addItem(withTitle: "All connected displays")
+        screenPicker.lastItem?.representedObject = "all"
+        if previous == "all" {
+            screenPicker.selectItem(at: screenPicker.numberOfItems - 1)
+        } else if let index = NSScreen.screens.firstIndex(where: { screenID($0) == previous }) {
             screenPicker.selectItem(at: index)
         } else if previous != nil {
             screenPicker.select(nil)
         }
-        if ready, previous != nil, !wasConnected, screenPicker.selectedItem != nil {
+        updateDisplayResolution()
+        if ready, previous != nil, (!wasConnected || previous == "all"),
+            screenPicker.selectedItem != nil
+        {
             saved.removeValue(forKey: "lastHash")
+            saved.removeValue(forKey: "displayHashes")
             persist()
             if automatic.state == .on { applyNow() }
         }
     }
     @objc func changeScreen() {
+        var sizes = saved["displaySizes"] as? [String: [String: Int]] ?? [:]
+        if let previous = saved["screen"] as? String, sizes[previous] == nil,
+            let width = editorView.editor["width"] as? Int,
+            let height = editorView.editor["height"] as? Int
+        {
+            sizes[previous] = ["width": width, "height": height]
+            saved["displaySizes"] = sizes
+        }
+        displaySelectionGeneration &+= 1
         saved["screen"] = screenPicker.selectedItem?.representedObject as? String
         saved.removeValue(forKey: "lastHash")
+        saved.removeValue(forKey: "displayHashes")
         persist()
+        updateDisplayResolution()
+        guard ready, let selection = saved["screen"] as? String else { return }
+        var dimensions = sizes[selection]
+        if dimensions == nil, let screen = try? targetScreen() {
+            let size = wallpaperPixelSize(screen)
+            dimensions = ["width": Int(size.width), "height": Int(size.height)]
+        }
+        if let dimensions, let width = dimensions["width"], let height = dimensions["height"],
+            (1280...7680).contains(width), (720...4320).contains(height)
+        {
+            queueEditorPatch(["width": width, "height": height], automaticApply: false)
+        }
+    }
+    var allDisplays: Bool { saved["screen"] as? String == "all" }
+    func updateDisplayResolution() {
+        let button = editorView.displayResolution
+        let resolution = editorView.resolution
+        button.isHidden = allDisplays
+        editorView.displaySizes.isHidden = !allDisplays
+        if allDisplays {
+            resolution.removeAllItems()
+            resolution.addItem(withTitle: "Use screen sizes")
+            resolution.selectItem(at: 0)
+            resolution.isEnabled = false
+            let sizes = NSScreen.screens.map { screen in
+                let size = wallpaperPixelSize(screen)
+                return "\(screen.localizedName): \(Int(size.width)) × \(Int(size.height))"
+            }
+            let editor = editorView.editor
+            var notes =
+                sizes + [
+                    "Apply uses each screen's size. Preview and exports use \(editor["width"] as? Int ?? 3024) × \(editor["height"] as? Int ?? 1964)."
+                ]
+            if wallpaperSharesAllSpacesAndDisplays() {
+                notes.append(
+                    "Turn off macOS's “Show on all Spaces” setting to use separate display sizes.")
+            }
+            editorView.displaySizes.stringValue = notes.joined(separator: "\n\n")
+            button.isEnabled = false
+            return
+        }
+        if resolution.item(withTitle: "Use screen sizes") != nil {
+            resolution.removeAllItems()
+            let editor = editorView.editor
+            let size = "\(editor["width"] as? Int ?? 3024) × \(editor["height"] as? Int ?? 1964)"
+            for value in [
+                size, "3024 × 1964", "3456 × 2234", "2560 × 1440", "3840 × 2160", "1920 × 1080",
+            ] where resolution.item(withTitle: value) == nil {
+                resolution.addItem(withTitle: value)
+            }
+            resolution.selectItem(withTitle: size)
+        }
+        resolution.isEnabled = ready
+        guard let screen = try? targetScreen() else {
+            button.title = "Choose a connected display"
+            button.isEnabled = false
+            return
+        }
+        let size = wallpaperPixelSize(screen)
+        button.title = "Use \(Int(size.width)) × \(Int(size.height))"
+        button.toolTip = "Match \(screen.localizedName)'s current resolution in pixels."
+        button.isEnabled =
+            ready && size.width >= 1280 && size.height >= 720
+            && size.width <= 7680 && size.height <= 4320
+        if size.width < 1280 || size.height < 720 || size.width > 7680 || size.height > 4320 {
+            button.toolTip = "Supported image sizes range from 1280 × 720 to 7680 × 4320."
+        }
+    }
+    @objc func useDisplayResolution() {
+        guard ready, let screen = try? targetScreen() else { return }
+        let size = wallpaperPixelSize(screen)
+        guard size.width >= 1280, size.height >= 720, size.width <= 7680, size.height <= 4320 else {
+            return
+        }
+        window?.makeFirstResponder(nil)
+        editorView.onChange?(["width": Int(size.width), "height": Int(size.height)])
     }
     @objc func changeRefreshInterval() {
         saved["refreshInterval"] = refreshPicker.selectedItem?.representedObject as? Double ?? 3600
@@ -615,6 +891,15 @@ final class StatusLabel: NSTextField {
             let screen = NSScreen.screens.first(where: { screenID($0) == id })
         else { throw WallpaperError.invalid("Choose a connected display.") }
         return screen
+    }
+    func targetScreens() throws -> [NSScreen] {
+        if allDisplays {
+            guard !NSScreen.screens.isEmpty else {
+                throw WallpaperError.invalid("Choose a connected display.")
+            }
+            return NSScreen.screens
+        }
+        return [try targetScreen()]
     }
     func js(_ body: String, _ arguments: [String: Any] = [:], updates: Bool = true) async throws
         -> Any
@@ -644,6 +929,7 @@ final class StatusLabel: NSTextField {
             previewRevision = revision
             saved["editor"] = editor
             editorView.display(snapshot)
+            updateDisplayResolution()
             if let encoded = snapshot["image"] as? String, let bytes = Data(base64Encoded: encoded),
                 let image = NSImage(data: bytes)
             {
@@ -667,18 +953,21 @@ final class StatusLabel: NSTextField {
         editorView.showError(detail)
         status.stringValue = detail
     }
-    func scheduleEditorSave() {
+    func scheduleEditorSave(automaticApply: Bool = true) {
+        let selectionGeneration = displaySelectionGeneration
         saveTimer?.invalidate()
         saveTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.persist()
-                if self?.ready == true && self?.automatic.state == .on {
+                if automaticApply && self?.ready == true && self?.automatic.state == .on
+                    && self?.displaySelectionGeneration == selectionGeneration
+                {
                     Task { @MainActor in await self?.makeAndApply(force: false) }
                 }
             }
         }
     }
-    func exportImage(heic: Bool) {
+    func exportImage(heic: Bool, theme: String? = nil) {
         guard ready, !exporting else { return }
         exporting = true
         editorView.exportMenu.isEnabled = false
@@ -694,11 +983,13 @@ final class StatusLabel: NSTextField {
                     try await js(
                         heic
                             ? "return await window.nativePair()"
-                            : "return await window.nativePNG()", updates: false) as? [String: Any]
+                            : "return await window.nativePNG(\(theme == "light" ? "'light'" : theme == "dark" ? "'dark'" : "null"))",
+                        updates: false) as? [String: Any]
                     ?? [:]
                 let panel = NSSavePanel()
                 panel.allowedContentTypes = heic ? [.heic] : [.png]
-                panel.nameFieldStringValue = heic ? "wapacal.heic" : "wapacal.png"
+                panel.nameFieldStringValue =
+                    heic ? "wapacal.heic" : theme.map { "wapacal-\($0).png" } ?? "wapacal.png"
                 guard await panel.beginSheetModal(for: window) == .OK, let url = panel.url else {
                     return
                 }
@@ -752,6 +1043,7 @@ final class StatusLabel: NSTextField {
             sourceColor.selectItem(
                 at: sourceColorNames.firstIndex { $0.lowercased() == color } ?? 0)
         }
+        updateSourceColorSwatches()
         sourceEnabled.state = source["enabled"] as? Bool == false ? .off : .on
         sourceEnabled.isEnabled = !source.isEmpty
         saveSourceButton.title = source.isEmpty ? "Add & refresh" : "Save & refresh"
@@ -784,6 +1076,36 @@ final class StatusLabel: NSTextField {
         settingsWindow.makeFirstResponder(urlField)
         status.stringValue = "Enter a name and subscription URL, then choose Add & refresh."
     }
+    private func updateSourceColorSwatches() {
+        // Representative light-appearance colors from src/layout.mjs.
+        let presets: [String: UInt32] = [
+            "Green": 0x356e50, "Blue": 0x285e9b, "Purple": 0x754398,
+            "Pink": 0x9b3e70, "Orange": 0x91501f, "Red": 0xa13c38,
+        ]
+        for item in sourceColor.itemArray {
+            let color: NSColor
+            if item.title == "Custom" {
+                color = customSourceColor
+            } else if let rgb = presets[item.title] {
+                color = NSColor(
+                    srgbRed: CGFloat((rgb >> 16) & 255) / 255,
+                    green: CGFloat((rgb >> 8) & 255) / 255,
+                    blue: CGFloat(rgb & 255) / 255, alpha: 1)
+            } else {
+                color = .secondaryLabelColor
+            }
+            item.image = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { _ in
+                let dot = NSBezierPath(ovalIn: NSRect(x: 3, y: 3, width: 10, height: 10))
+                color.setFill()
+                dot.fill()
+                NSColor.labelColor.withAlphaComponent(0.25).setStroke()
+                dot.lineWidth = 0.5
+                dot.stroke()
+                return true
+            }
+        }
+    }
+
     var selectedSourceColor: String {
         guard sourceColor.titleOfSelectedItem == "Custom" else {
             return (sourceColor.titleOfSelectedItem ?? "Default").lowercased()
@@ -810,6 +1132,7 @@ final class StatusLabel: NSTextField {
     @objc func customColorChanged(_ panel: NSColorPanel) {
         guard sourceColor.titleOfSelectedItem == "Custom" else { return }
         customSourceColor = panel.color
+        updateSourceColorSwatches()
         changeSourceColor()
     }
     @objc func changeSourceColor() {
@@ -986,6 +1309,7 @@ final class StatusLabel: NSTextField {
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
     @objc func tick() {
+        refreshWallpaperSharingWarning()
         guard ready else { return }
         Task { @MainActor in
             do {
@@ -1105,6 +1429,7 @@ final class StatusLabel: NSTextField {
         Task { @MainActor in await makeAndApply(force: true) }
     }
     func makeAndApply(force: Bool) async {
+        refreshWallpaperSharingWarning()
         while pendingEdits > 0 { try? await Task.sleep(nanoseconds: 50_000_000) }
         guard ready, lastEditorError == nil else { return }
         if rendering {
@@ -1120,20 +1445,79 @@ final class StatusLabel: NSTextField {
             }
         }
         do {
-            guard
-                let pair = try await js("return await window.nativePair()", updates: false)
-                    as? [String: Any]
-            else { throw WallpaperError.invalid("Could not render the wallpaper.") }
-            try install(pair, force: force)
+            let operationGeneration = displaySelectionGeneration
+            let selection = saved["screen"] as? String
+            let screens = try targetScreens()
+            if wallpaperSharesAllSpacesAndDisplays() {
+                throw WallpaperError.invalid(
+                    "macOS is set to show one wallpaper on all Spaces and displays. Turn off “Show on all Spaces” in System Settings → Wallpaper before applying separate display wallpapers."
+                )
+            }
+            let previousWallpapers = Dictionary(
+                uniqueKeysWithValues: NSScreen.screens.map {
+                    (screenID($0), NSWorkspace.shared.desktopImageURL(for: $0)?.standardizedFileURL)
+                })
+            var failures: [String] = []
+            for screen in screens {
+                do {
+                    let size = wallpaperPixelSize(screen)
+                    if allDisplays && (size.width > 7680 || size.height > 4320) {
+                        throw WallpaperError.invalid("Resolution exceeds 7680 × 4320.")
+                    }
+                    let dimensions: [String: Any] =
+                        allDisplays
+                        ? ["width": Int(size.width), "height": Int(size.height)] : [:]
+                    guard
+                        let pair = try await js(
+                            "return await window.nativePair(size)", ["size": dimensions],
+                            updates: false
+                        ) as? [String: Any]
+                    else {
+                        throw WallpaperError.invalid("Could not render the wallpaper.")
+                    }
+                    guard saved["screen"] as? String == selection else {
+                        rerender = true
+                        return
+                    }
+                    guard displaySelectionGeneration == operationGeneration else {
+                        rerender = true
+                        return
+                    }
+                    guard NSScreen.screens.contains(where: { screenID($0) == screenID(screen) })
+                    else {
+                        throw WallpaperError.invalid("Display disconnected.")
+                    }
+                    try install(pair, screen: screen, force: force)
+                } catch {
+                    failures.append("\(screen.localizedName): \(error.localizedDescription)")
+                }
+            }
+            if !allDisplays, failures.isEmpty {
+                let targetIDs = Set(screens.map(screenID))
+                let changedOther = NSScreen.screens.first { other in
+                    guard !targetIDs.contains(screenID(other)) else { return false }
+                    return NSWorkspace.shared.desktopImageURL(for: other)?.standardizedFileURL
+                        != previousWallpapers[screenID(other)]
+                }
+                if let changedOther {
+                    throw WallpaperError.invalid(
+                        "macOS changed the wallpaper on \(changedOther.localizedName) too. Turn off “Show on all Spaces” in System Settings → Wallpaper before applying to one display."
+                    )
+                }
+            }
+            if !failures.isEmpty {
+                status.stringValue = failures.joined(separator: " ")
+            } else if allDisplays && refreshFailure == nil {
+                status.stringValue =
+                    "Wallpaper applied to \(screens.count) displays at their own resolutions."
+            }
         } catch { status.stringValue = "Wallpaper kept. \(error.localizedDescription)" }
     }
-    func install(_ pair: [String: Any], force: Bool) throws {
+    func install(_ pair: [String: Any], screen: NSScreen, force: Bool) throws {
         let data = try JSONSerialization.data(withJSONObject: pair, options: [.sortedKeys])
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        let screen = try targetScreen()
-        if !force && saved["lastHash"] as? String == digest
-            && saved["screen"] as? String == screenID(screen)
-        {
+        var hashes = saved["displayHashes"] as? [String: String] ?? [:]
+        if !force && hashes[screenID(screen)] == digest {
             return
         }
         let parsed = try JSONDecoder().decode(PairExport.self, from: data)
@@ -1143,8 +1527,9 @@ final class StatusLabel: NSTextField {
         let file = wallpapersDirectory().appendingPathComponent("editor-wallpaper.heic")
         try encodePair(light: loadImage(light), dark: loadImage(dark), to: file)
         let restorable = try applyWallpaper(file, screen: screen)
-        saved["screen"] = screenID(screen)
-        saved["lastHash"] = digest
+        hashes[screenID(screen)] = digest
+        saved["displayHashes"] = hashes
+        if !allDisplays { saved["screen"] = screenID(screen) }
         persist()
         status.stringValue =
             refreshFailure
@@ -1158,11 +1543,20 @@ final class StatusLabel: NSTextField {
             return
         }
         do {
-            try restoreWallpaper(screen: targetScreen())
             automatic.state = .off
             saved["autoApply"] = false
             saved.removeValue(forKey: "lastHash")
+            saved.removeValue(forKey: "displayHashes")
             persist()
+            var failures: [String] = []
+            for screen in try targetScreens() {
+                do { try restoreWallpaper(screen: screen) } catch {
+                    failures.append("\(screen.localizedName): \(error.localizedDescription)")
+                }
+            }
+            guard failures.isEmpty else {
+                throw WallpaperError.invalid(failures.joined(separator: " "))
+            }
             status.stringValue = "Previous wallpaper restored. Automatic updates paused."
         } catch { status.stringValue = error.localizedDescription }
     }

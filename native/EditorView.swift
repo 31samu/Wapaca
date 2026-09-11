@@ -5,12 +5,14 @@ private final class FlippedDocumentView: NSView {
 }
 
 // Every view in this controller is AppKit. Calendar text is always plain text.
-final class EditorViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
+final class EditorViewController: NSViewController, NSMenuItemValidation, NSTableViewDataSource,
+    NSTableViewDelegate,
     NSTextFieldDelegate
 {
     var onChange: (([String: Any]) -> Void)?
     var onInclude: ((String, Bool) -> Void)?
-    var onExport: ((Bool) -> Void)?
+    var onExport: ((Bool, String?) -> Void)?
+    var canExport: (() -> Bool)?
     private(set) var editor: [String: Any] = [:]
     private(set) var events: [[String: Any]] = []
     private var suggestions: [[String: Any]] = []
@@ -25,6 +27,8 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
     let mode = NSPopUpButton()
     let theme = NSPopUpButton()
     let resolution = NSPopUpButton()
+    let displayResolution = NSButton(title: "Use display resolution", target: nil, action: nil)
+    let displaySizes = NSTextField(wrappingLabelWithString: "")
     let course = NSPopUpButton()
     let name = NSTextField()
     let start = NSDatePicker()
@@ -116,6 +120,8 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
         exportMenu.addItem(withTitle: "Export")
         for (title, action) in [
             ("PNG · Current appearance…", #selector(exportPNG)),
+            ("PNG · Light…", #selector(exportLightPNG)),
+            ("PNG · Dark…", #selector(exportDarkPNG)),
             ("HEIC · Light and dark…", #selector(exportHEIC)),
         ] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
@@ -123,12 +129,20 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
             exportMenu.menu?.addItem(item)
         }
         exportMenu.setAccessibilityLabel("Export wallpaper")
+        displaySizes.font = .systemFont(ofSize: 11)
+        displaySizes.textColor = .secondaryLabelColor
+        displaySizes.isHidden = true
         appearanceFields = Self.stack(
             [
-                field("Preview appearance", theme), field("Image size", resolution), showTitle,
+                field("Preview appearance", theme),
+                field(
+                    "Image size",
+                    Self.stack([resolution, displayResolution, displaySizes], spacing: 6)),
+                showTitle,
                 rooms, iconSpace,
             ], spacing: 14)
         appearanceFields.isHidden = true
+        displaySizes.widthAnchor.constraint(equalTo: resolution.widthAnchor).isActive = true
         appearanceToggle.setButtonType(.onOff)
         appearanceToggle.isBordered = false
         appearanceToggle.image = NSImage(
@@ -163,7 +177,7 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
 
         preview.imageScaling = .scaleProportionallyUpOrDown
         preview.setAccessibilityLabel(
-            "Wallpaper preview. Full event information is available in Choose events.")
+            "Wallpaper preview. Full event information is available in Exclude events.")
         preview.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         preview.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         let previewTab = NSTabViewItem(identifier: "preview")
@@ -232,7 +246,7 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
             eventSplit.trailingAnchor.constraint(equalTo: eventView.trailingAnchor),
         ])
         let eventTab = NSTabViewItem(identifier: "events")
-        eventTab.label = "Choose events"
+        eventTab.label = "Exclude events"
         eventTab.view = eventView
         tabs.addTabViewItem(eventTab)
 
@@ -396,11 +410,22 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
     }
     @objc func exportPNG() {
         view.window?.makeFirstResponder(nil)
-        onExport?(false)
+        onExport?(false, nil)
+    }
+    @objc func exportLightPNG() {
+        view.window?.makeFirstResponder(nil)
+        onExport?(false, "light")
+    }
+    @objc func exportDarkPNG() {
+        view.window?.makeFirstResponder(nil)
+        onExport?(false, "dark")
+    }
+    @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        canExport?() ?? false
     }
     @objc func exportHEIC() {
         view.window?.makeFirstResponder(nil)
-        onExport?(true)
+        onExport?(true, nil)
     }
     @objc func showSuggestions() { tabs.selectTabViewItem(withIdentifier: "suggestions") }
     func closeDetails() { tabs.selectTabViewItem(withIdentifier: "preview") }

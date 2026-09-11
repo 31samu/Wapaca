@@ -328,7 +328,7 @@
         <div class="preview-shell"><div id="wallpaper"></div></div>
         <div id="warning" aria-live="polite"></div>
         <details>
-          <summary id="detail-count">Choose events</summary>
+          <summary id="detail-count">Exclude events</summary>
           <p class="note">
             Uncheck an event to leave it out of the wallpaper and exports. You can include it again
             here.
@@ -508,7 +508,7 @@
             `${state.width} × ${state.height} · ${result.grid.visible.length} sessions`;
           $('warning').textContent = result.warnings.join(' ');
           $('detail-count').textContent =
-            `Choose events · ${result.grid.visible.length} included · ${candidates.length - result.grid.visible.length} excluded`;
+            `Exclude events · ${result.grid.visible.length} included · ${candidates.length - result.grid.visible.length} excluded`;
           $('event-list').replaceChildren();
           for (const event of candidates) {
             const item = node('article', 'event', '');

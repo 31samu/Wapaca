@@ -124,6 +124,11 @@ func screenID(_ screen: NSScreen) -> String {
     return String(number)
 }
 
+func wallpaperPixelSize(_ screen: NSScreen) -> NSSize {
+    // Use the current backing pixels, not the scaled desktop size in points.
+    screen.convertRectToBacking(NSRect(origin: .zero, size: screen.frame.size)).size
+}
+
 struct WallpaperBackup: Codable {
     let screen: String
     let url: URL?
@@ -190,6 +195,24 @@ func recoveryDirectory() -> URL {
 }
 func wallpapersDirectory() -> URL {
     workspaceDirectory().appendingPathComponent("wallpapers", isDirectory: true)
+}
+
+func wallpaperSharesAllSpacesAndDisplays() -> Bool {
+    let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("com.apple.wallpaper/Store/Index.plist")
+    guard let data = try? Data(contentsOf: url) else { return false }
+    return wallpaperSharesAllSpacesAndDisplays(in: data)
+}
+
+func wallpaperSharesAllSpacesAndDisplays(in data: Data) -> Bool {
+    guard
+        let plist = try? PropertyListSerialization.propertyList(
+            from: data, options: [], format: nil),
+        let root = plist as? [String: Any],
+        let shared = root["AllSpacesAndDisplays"]
+    else { return false }
+    // WallpaperAgent uses the literal string "$null" when sharing is disabled.
+    return shared is [String: Any]
 }
 func appliedDirectory() -> URL {
     wallpapersDirectory().appendingPathComponent("applied", isDirectory: true)
@@ -405,6 +428,21 @@ func applyWallpaper(_ url: URL, screen: NSScreen) throws -> Bool {
             .imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue,
             .allowClipping: false,
         ])
+    // WallpaperAgent applies the request asynchronously. Do not let a later
+    // screen change race this assignment or report success before macOS has it.
+    let deadline = Date().addingTimeInterval(3)
+    while NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL
+        != copy.standardizedFileURL && Date() < deadline
+    {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    }
+    guard
+        NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL
+            == copy.standardizedFileURL
+    else {
+        throw WallpaperError.invalid(
+            "macOS did not confirm the wallpaper for \(screen.localizedName).")
+    }
     let record = try JSONDecoder().decode(WallpaperBackup.self, from: Data(contentsOf: backup))
     try? cleanupRuntimeFiles()
     return record.canRestore
@@ -598,6 +636,11 @@ final class WallpaperApp: NSObject, NSApplicationDelegate {
     @objc func apply() {
         guard let selected else { return }
         do {
+            guard !wallpaperSharesAllSpacesAndDisplays() else {
+                throw WallpaperError.invalid(
+                    "macOS is set to show one wallpaper on all Spaces and displays. Turn off “Show on all Spaces” in System Settings → Wallpaper before applying separate display wallpapers."
+                )
+            }
             let canRestore = try applyWallpaper(selected, screen: targetScreen())
             status.stringValue =
                 canRestore

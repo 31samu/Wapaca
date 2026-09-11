@@ -24,6 +24,9 @@ test(
       'output/Wapacal.app/Contents/Resources/calendar-worker.html',
       join(resources, 'calendar-worker.html'),
     );
+    for (const name of ['LICENSE', 'THIRD-PARTY-NOTICES.txt']) {
+      await copyFile(name, join(resources, name));
+    }
     const { seed, config } = await loadFixtureApp();
     await writeFile(
       join(resources, 'seed.json'),
@@ -65,18 +68,20 @@ test(
     await writeFile(stderr, '');
     // AppKit applications must be registered and launched through Launch Services.
     // Starting the executable directly can make WindowServer abort it during startup.
+    // Launch in the foreground so keyboard-focus and Close Window checks have a key window.
     execFileSync(
       'open',
       [
         '-W',
         '-n',
-        '-g',
         '--env',
         `WAPACAL_APP_SUPPORT=${join(temp, 'support')}`,
         '--env',
         `WAPACAL_LEGACY_WORKSPACE=${join(temp, 'legacy')}`,
         '--env',
         `WAPACAL_UI_OUTPUT=${temp}`,
+        '--env',
+        `WAPACAL_TEST_WALLPAPER=${process.env.WAPACAL_TEST_WALLPAPER === '1' ? '1' : '0'}`,
         '-o',
         stdout,
         '--stderr',

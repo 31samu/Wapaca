@@ -235,7 +235,7 @@ export function renderWallpaper(events, options) {
     H = (height / width) * W;
   const menuBarInset = 24;
   const x = 76,
-    right = options.iconSpace === false ? 76 : 158,
+    right = options.iconSpace === false ? 76 : 120,
     gutter = 44,
     cw = (W - x - right - gutter) / grid.columns;
   const legend = [];

@@ -2,7 +2,8 @@ import AppKit
 import WebKit
 
 // Compiled into a temporary fixture-only app by native-ui.mjs.
-// Never changes wallpaper, login items, or the user's Application Support directory.
+// Wallpaper apply/restore checks require explicit WAPACAL_TEST_WALLPAPER=1.
+// Never changes login items or the user's Application Support directory.
 func require(_ value: @autoclosure () -> Bool, _ message: String) throws {
     if !value() { throw WallpaperError.invalid("Native UI test failed: " + message) }
 }
@@ -20,7 +21,35 @@ Task { @MainActor in
         }
         try require(editorApp.ready, "startup: \(editorApp.status.stringValue)")
         editorApp.timer?.invalidate()
+        for (shared, expected) in [("$null" as Any, false), (["Desktop": [:]] as Any, true)] {
+            let data = try PropertyListSerialization.data(
+                fromPropertyList: ["AllSpacesAndDisplays": shared], format: .binary, options: 0)
+            try require(
+                wallpaperSharesAllSpacesAndDisplays(in: data) == expected,
+                "shared wallpaper detection distinguishes the disabled sentinel from a configuration"
+            )
+        }
         let ui = editorApp.editorView
+        editorApp.showWallpaperSharingWarning(true)
+        editorApp.window.contentView!.layoutSubtreeIfNeeded()
+        try require(
+            !editorApp.wallpaperSharingWarning.isHidden
+                && editorApp.wallpaperSharingWarning.frame.height > 0,
+            "shared-wallpaper warning is visible above the editor")
+        try require(
+            editorApp.wallpaperSharingMessage.stringValue.contains("Show on all Spaces")
+                && editorApp.wallpaperSettingsButton.action == #selector(
+                    editorApp.openWallpaperSettings),
+            "warning explains the setting and offers a settings shortcut")
+        let warningFrame = editorApp.wallpaperSharingWarning.convert(
+            editorApp.wallpaperSharingWarning.bounds, to: editorApp.window.contentView)
+        try require(
+            editorApp.window.contentView!.bounds.contains(warningFrame),
+            "warning fits in the window")
+        editorApp.showWallpaperSharingWarning(false)
+        try require(
+            editorApp.wallpaperSharingWarning.isHidden, "warning disappears when sharing is off")
+        editorApp.refreshWallpaperSharingWarning()
         try require(
             !descendants(editorApp.window.contentView!).contains { $0 is WKWebView },
             "web view in window hierarchy")
@@ -28,6 +57,218 @@ Task { @MainActor in
         try require(ui.table.numberOfRows > 0, "event rows")
         try require(ui.name.stringValue == "Prototype module", "saved module name")
         try require(ui.resolution.titleOfSelectedItem == "2880 × 1800", "custom saved image size")
+        let initialScreen = editorApp.saved["screen"]
+        for screen in NSScreen.screens {
+            editorApp.screenPicker.selectItem(
+                at: editorApp.screenPicker.itemArray.firstIndex {
+                    $0.representedObject as? String == screenID(screen)
+                }!)
+            editorApp.changeScreen()
+            while editorApp.pendingEdits > 0 { try await Task.sleep(nanoseconds: 50_000_000) }
+            let size = wallpaperPixelSize(screen)
+            try require(
+                ui.resolution.titleOfSelectedItem == "\(Int(size.width)) × \(Int(size.height))",
+                "a display without a saved size uses its own resolution")
+            try require(
+                ui.displayResolution.title == "Use \(Int(size.width)) × \(Int(size.height))",
+                "display pixel suggestion")
+            print(
+                "Display: \(screen.localizedName), \(Int(size.width)) × \(Int(size.height)) pixels")
+        }
+        ui.displayResolution.performClick(nil)
+        while editorApp.pendingEdits > 0 { try await Task.sleep(nanoseconds: 50_000_000) }
+        let selectedSize = wallpaperPixelSize(try editorApp.targetScreen())
+        try require(
+            ui.editor["width"] as? Int == Int(selectedSize.width), "resolution button changes width"
+        )
+        try require(
+            ui.editor["height"] as? Int == Int(selectedSize.height),
+            "resolution button changes height")
+        for (index, screen) in NSScreen.screens.enumerated() {
+            editorApp.screenPicker.selectItem(at: index)
+            editorApp.changeScreen()
+            while editorApp.pendingEdits > 0 { try await Task.sleep(nanoseconds: 50_000_000) }
+            editorApp.queueEditorPatch(
+                ["width": 2560 + index * 128, "height": 1440], automaticApply: false)
+            while editorApp.pendingEdits > 0 { try await Task.sleep(nanoseconds: 50_000_000) }
+            try require(
+                (editorApp.saved["displaySizes"] as? [String: [String: Int]])?[screenID(screen)]?[
+                    "width"] == 2560 + index * 128,
+                "custom dimensions are saved under the display identity")
+        }
+        for index in NSScreen.screens.indices.reversed() {
+            editorApp.screenPicker.selectItem(at: index)
+            editorApp.changeScreen()
+            while editorApp.pendingEdits > 0 { try await Task.sleep(nanoseconds: 50_000_000) }
+            try require(
+                ui.editor["width"] as? Int == 2560 + index * 128,
+                "switching back restores that display's custom resolution")
+            try require(
+                ui.preview.image?.representations.first?.pixelsWide == 2560 + index * 128
+                    && ui.preview.image?.representations.first?.pixelsHigh == 1440,
+                "switching back rerenders the preview at that display's saved size")
+            ui.displayResolution.performClick(nil)
+            while editorApp.pendingEdits > 0 { try await Task.sleep(nanoseconds: 50_000_000) }
+        }
+        _ = try await editorApp.js(
+            "return window.nativeUpdate(patch)", ["patch": ["width": 2880, "height": 1800]])
+        editorApp.screenPicker.selectItem(withTitle: "All connected displays")
+        editorApp.changeScreen()
+        let targets = try editorApp.targetScreens()
+        try require(targets.count == NSScreen.screens.count, "all displays selected")
+        try require(!ui.displayResolution.isEnabled, "all displays use their own size")
+        try require(
+            ui.resolution.titleOfSelectedItem == "Use screen sizes" && !ui.resolution.isEnabled,
+            "all displays show screen sizing instead of one numeric resolution")
+        try require(
+            ui.displayResolution.isHidden && !ui.displaySizes.isHidden,
+            "all displays show the per-screen size explanation")
+        for screen in try editorApp.targetScreens() {
+            let size = wallpaperPixelSize(screen)
+            try require(
+                ui.displaySizes.stringValue.contains(
+                    "\(screen.localizedName): \(Int(size.width)) × \(Int(size.height))"),
+                "each screen's size is visible")
+            let pair =
+                try await editorApp.js(
+                    "return await window.nativePair(size)",
+                    ["size": ["width": Int(size.width), "height": Int(size.height)]], updates: false
+                ) as! [String: Any]
+            for theme in ["light", "dark"] {
+                let image = try loadImage(Data(base64Encoded: pair[theme] as! String)!)
+                try require(
+                    image.width == Int(size.width) && image.height == Int(size.height),
+                    "per-display \(theme) render dimensions")
+            }
+        }
+        try require(
+            ui.editor["width"] as? Int == 2880 && ui.editor["height"] as? Int == 1800,
+            "per-display render preserves editor size")
+        for screen in NSScreen.screens {
+            editorApp.screenPicker.selectItem(
+                at: editorApp.screenPicker.itemArray.firstIndex {
+                    $0.representedObject as? String == screenID(screen)
+                }!)
+            editorApp.changeScreen()
+            try require(
+                editorApp.pendingEdits > 0, "leaving all displays queues sizing before Apply")
+            while editorApp.pendingEdits > 0 {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            let size = wallpaperPixelSize(screen)
+            try require(
+                ui.editor["width"] as? Int == Int(size.width)
+                    && ui.editor["height"] as? Int == Int(size.height),
+                "leaving all displays adopts the selected screen's size")
+            try require(
+                ui.resolution.titleOfSelectedItem == "\(Int(size.width)) × \(Int(size.height))",
+                "selected screen size is reflected in the size menu")
+            editorApp.screenPicker.selectItem(withTitle: "All connected displays")
+            editorApp.changeScreen()
+        }
+        _ = try await editorApp.js(
+            "return window.nativeUpdate(patch)", ["patch": ["width": 2880, "height": 1800]])
+        if ProcessInfo.processInfo.environment["WAPACAL_TEST_WALLPAPER"] == "1" {
+            let screens = NSScreen.screens
+            let originals = screens.map { WallpaperBackup(screen: $0) }
+            try require(
+                originals.allSatisfy { $0.canRestore },
+                "all original wallpapers must be restorable before live testing")
+            defer {
+                for (screen, original) in zip(screens, originals) {
+                    try? NSWorkspace.shared.setDesktopImageURL(
+                        original.url!, for: screen, options: original.options)
+                }
+            }
+            await editorApp.makeAndApply(force: true)
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            for screen in screens {
+                let url = NSWorkspace.shared.desktopImageURL(for: screen)!
+                try require(
+                    url.path.hasPrefix(appliedDirectory().path),
+                    "live wallpaper applied to \(screen.localizedName): \(editorApp.status.stringValue)"
+                )
+                let info = try inspectData(readBounded(url))
+                let size = wallpaperPixelSize(screen)
+                try require(
+                    info.width == Int(size.width) && info.height == Int(size.height),
+                    "live wallpaper dimensions for \(screen.localizedName)")
+            }
+            editorApp.restore()
+            for (screen, original) in zip(screens, originals) {
+                try require(
+                    NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL
+                        == original.url?.standardizedFileURL, "live wallpaper restoration")
+            }
+            for index in Array(screens.indices) + Array(screens.indices.reversed()) {
+                let screen = screens[index]
+                editorApp.automatic.state = .on
+                editorApp.screenPicker.selectItem(at: index)
+                editorApp.changeScreen()
+                try await Task.sleep(nanoseconds: 800_000_000)
+                try require(
+                    screens.allSatisfy {
+                        NSWorkspace.shared.desktopImageURL(for: $0)?.standardizedFileURL
+                            == originals[screens.firstIndex(of: $0)!].url?.standardizedFileURL
+                    },
+                    "changing the target display does not apply a wallpaper automatically")
+                editorApp.useDisplayResolution()
+                let applyDeadline = Date().addingTimeInterval(15)
+                var didApply = false
+                while Date() < applyDeadline {
+                    if let url = NSWorkspace.shared.desktopImageURL(for: screen),
+                        url.path.hasPrefix(appliedDirectory().path)
+                    {
+                        let info = try inspectData(readBounded(url))
+                        let size = wallpaperPixelSize(screen)
+                        try require(
+                            info.width == Int(size.width) && info.height == Int(size.height),
+                            "automatic size edit uses the selected display's resolution"
+                        )
+                        if !editorApp.rendering && editorApp.pendingEdits == 0 {
+                            didApply = true
+                            break
+                        }
+                    }
+                    try await Task.sleep(nanoseconds: 50_000_000)
+                }
+                try require(
+                    didApply, "size edit automatically applies to the selected screen")
+                try require(
+                    NSWorkspace.shared.desktopImageURL(for: screen)!.path.hasPrefix(
+                        appliedDirectory().path), "single-display apply")
+                for (other, original) in zip(screens, originals)
+                where screenID(other) != screenID(screen) {
+                    try require(
+                        NSWorkspace.shared.desktopImageURL(for: other)?.standardizedFileURL
+                            == original.url?.standardizedFileURL,
+                        "single-display apply leaves other displays unchanged")
+                }
+                editorApp.restore()
+                try require(
+                    NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL
+                        == originals[index].url?.standardizedFileURL, "single-display restore")
+            }
+            print("Live wallpaper apply and restore passed on \(screens.count) displays")
+        }
+        _ = try await editorApp.js(
+            "return window.nativeUpdate(patch)", ["patch": ["width": 2880, "height": 1800]])
+        editorApp.saved["screen"] = "disconnected-fixture-display"
+        editorApp.updateScreens()
+        try require(
+            editorApp.screenPicker.selectedItem == nil,
+            "disconnected selection does not fall back to another display")
+        try require(!ui.displayResolution.isEnabled, "disconnected resolution button disabled")
+        editorApp.saved["screen"] = "all"
+        editorApp.updateScreens()
+        try require(
+            editorApp.screenPicker.titleOfSelectedItem == "All connected displays",
+            "all displays selection survives display refresh")
+        editorApp.saved["screen"] = initialScreen
+        editorApp.updateScreens()
+        try require(
+            ui.resolution.titleOfSelectedItem == "2880 × 1800" && ui.resolution.isEnabled,
+            "returning to one display restores the custom size control")
         try require(ui.showTitle.state == .off, "legacy title default")
         try require(ui.includeWeekends.state == .off, "weekends default off")
         ui.includeWeekends.performClick(nil)
@@ -49,6 +290,32 @@ Task { @MainActor in
         }
 
         let mainMenu = NSApp.mainMenu!
+        let appMenu = mainMenu.items[0].submenu!
+        try require(
+            appMenu.items.first?.title == "About Wapacal"
+                && appMenu.items.first?.action == #selector(editorApp.showAbout),
+            "About is the first application menu item")
+        appMenu.performActionForItem(at: 0)
+        let aboutWindow = editorApp.aboutWindow
+        try require(aboutWindow?.isVisible == true, "About menu opens a window")
+        let aboutContent = aboutWindow!.contentView!
+        try require(
+            !descendants(aboutContent).contains { $0 is NSScrollView },
+            "About fits without scrolling")
+        aboutContent.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let aboutImage = aboutContent.bitmapImageRepForCachingDisplay(in: aboutContent.bounds)!
+        aboutContent.cacheDisplay(in: aboutContent.bounds, to: aboutImage)
+        try aboutImage.representation(using: .png, properties: [:])!.write(
+            to: URL(fileURLWithPath: ProcessInfo.processInfo.environment["WAPACAL_UI_OUTPUT"]!)
+                .appendingPathComponent("native-about.png"))
+        editorApp.showAbout()
+        try require(editorApp.aboutWindow === aboutWindow, "About reuses its window")
+        editorApp.window.performClose(nil)
+        try require(NSApp.activationPolicy() == .regular, "About keeps the application active")
+        aboutWindow?.performClose(nil)
+        try require(NSApp.activationPolicy() == .accessory, "closing About returns to menu bar")
+        editorApp.show()
         try require(
             editorApp.statusMenu!.items.map { $0.title } == [
                 "Open Wapacal", "Settings…", "Refresh & Apply", "Quit",
@@ -211,7 +478,12 @@ Task { @MainActor in
             "Settings remains usable after editor closes")
         editorApp.show()
         editorApp.showSettings()
-        try await Task.sleep(nanoseconds: 100_000_000)
+        let focusDeadline = Date().addingTimeInterval(5)
+        while NSApp.keyWindow !== editorApp.settingsWindow && Date() < focusDeadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        try require(
+            NSApp.keyWindow === editorApp.settingsWindow, "Settings receives keyboard focus")
         editorApp.closeWindow()
         try require(
             !editorApp.settingsWindow.isVisible && editorApp.window.isVisible,
@@ -226,7 +498,8 @@ Task { @MainActor in
         ui.appearanceToggle.performClick(nil)
         try require(!ui.appearanceFields.isHidden, "appearance disclosure opens")
         try require(ui.theme.itemTitles == ["System", "Light", "Dark"], "appearance choices")
-        try require(ui.exportMenu.menu!.items.count == 3, "both export formats remain accessible")
+        try require(
+            ui.exportMenu.menu!.items.count == 5, "all export appearances remain accessible")
 
         // Drive target/action through real native controls.
         ui.theme.selectItem(at: 2)

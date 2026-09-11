@@ -51,6 +51,7 @@ try {
 <key>CFBundleIconFile</key><string>Wapacal.icns</string>
 <key>CFBundleVersion</key><string>${bundleVersion}</string>
 <key>CFBundleShortVersionString</key><string>${version}</string>
+<key>NSHumanReadableCopyright</key><string>Copyright © 2026 Samuel Kremer</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>CFBundleDocumentTypes</key><array><dict><key>CFBundleTypeName</key><string>Wapacal export</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSItemContentTypes</key><array><string>${bundleIdentifier}.export</string><string>local.timetable.export</string></array></dict></array>
