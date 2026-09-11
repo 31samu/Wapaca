@@ -73,6 +73,33 @@ final class EditorViewController: NSViewController, NSMenuItemValidation, NSTabl
         control.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return stack
     }
+    private func dateField(_ title: String, _ picker: NSDatePicker) -> NSStackView {
+        // Keep a native text-field bezel while giving the date segments a larger inset.
+        let container = NSView()
+        let bezel = NSTextField()
+        bezel.isEditable = false
+        bezel.isSelectable = false
+        bezel.setAccessibilityElement(false)
+        picker.isBezeled = false
+        picker.isBordered = false
+        picker.drawsBackground = false
+        for view in [bezel, picker] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            bezel.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            bezel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -21),
+            bezel.topAnchor.constraint(equalTo: container.topAnchor),
+            bezel.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            picker.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 6),
+            picker.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            picker.topAnchor.constraint(equalTo: container.topAnchor),
+            picker.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        picker.setAccessibilityLabel(title)
+        return field(title, container)
+    }
     private func scroll(_ content: NSView) -> NSScrollView {
         let document = FlippedDocumentView()
         document.addSubview(content)
@@ -114,7 +141,7 @@ final class EditorViewController: NSViewController, NSMenuItemValidation, NSTabl
             control.action = #selector(changeControl(_:))
         }
         moduleFields = Self.stack([
-            field("Module name", name), field("First day", start), field("Last day", end),
+            field("Module name", name), dateField("First day", start), dateField("Last day", end),
         ])
         monthField = field("Month", month)
         exportMenu.addItem(withTitle: "Export")

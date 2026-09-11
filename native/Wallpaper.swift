@@ -180,8 +180,7 @@ func workspaceDirectory() -> URL {
     if Bundle.main.bundleURL.pathExtension == "app" {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
             0]
-        return root.appendingPathComponent(
-            Bundle.main.bundleIdentifier ?? "com.samuelkremer.wapacal", isDirectory: true)
+        return root.appendingPathComponent("Wapacal", isDirectory: true)
     }
     return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(
         "output", isDirectory: true)
@@ -249,7 +248,7 @@ func previousApplicationSupportDirectories() -> [URL] {
     if ProcessInfo.processInfo.environment["WAPACAL_APP_SUPPORT"] != nil { return [] }
     guard Bundle.main.bundleURL.pathExtension == "app" else { return [] }
     let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    return ["local.wapacal.app", "local.timetable.wallpaper"].map {
+    return ["com.samuelkremer.wapacal", "local.wapacal.app", "local.timetable.wallpaper"].map {
         root.appendingPathComponent($0, isDirectory: true)
     }
 }
@@ -363,7 +362,7 @@ func cleanupRuntimeFiles() throws {
             NSWorkspace.shared.desktopImageURL(for: $0)?.standardizedFileURL.path
         })
     try trimFiles(
-        in: appliedDirectory(), matching: { $0.hasSuffix(".heic") }, keeping: 24, protected: active)
+        in: appliedDirectory(), matching: { $0.hasSuffix(".heic") }, keeping: 10, protected: active)
     try trimFiles(
         in: recoveryDirectory(),
         matching: { $0.hasPrefix("restored-") || $0.hasPrefix("unavailable-") }, keeping: 20)

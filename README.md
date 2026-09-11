@@ -61,7 +61,7 @@ From the menu bar, you can reopen Wapacal, change settings, refresh and apply th
   <img src="assets/screenshots/wapacal-editor-and-menubar.jpg" alt="Wapacal editor showing a calendar preview with the menu bar menu open" width="500">
 </p>
 
-Your settings and cached calendars stay on your Mac under `~/Library/Application Support/com.samuelkremer.wapacal/`.
+Your settings and cached calendars stay on your Mac under `~/Library/Application Support/Wapacal/`. Existing data migrates automatically from the previous `com.samuelkremer.wapacal` folder. Wallpaper files still in use by macOS remain at their original paths.
 
 ## Current limits
 
