@@ -631,13 +631,31 @@ Task { @MainActor in
         }
         try require(ui.editor["theme"] as? String == "dark", "appearance action")
         ui.tabs.selectTabViewItem(withIdentifier: "events")
-        editorApp.window.contentView?.layoutSubtreeIfNeeded()
-        try require(
-            ui.table.enclosingScrollView!.frame.width > 700, "event table fills the tab width")
-        try require(
-            ui.table.enclosingScrollView!.superview!.frame.height > 450,
-            "event split fills the tab height: scroll=\(ui.table.enclosingScrollView!.frame), parent=\(ui.table.enclosingScrollView!.superview!.frame), editor=\(ui.view.frame), main=\(ui.tabs.superview!.frame), tab=\(ui.tabs.frame), content=\(ui.tabs.selectedTabViewItem!.view!.frame)"
-        )
+        let originalContentSize = editorApp.window.contentView!.frame.size
+        // Check the actual layout at both the current size and a compact CI-sized window.
+        for size in [originalContentSize, NSSize(width: 1060, height: 588), originalContentSize] {
+            editorApp.window.setContentSize(size)
+            editorApp.window.contentView?.layoutSubtreeIfNeeded()
+            let tableScroll = ui.table.enclosingScrollView!
+            let split = tableScroll.superview as! NSSplitView
+            let content = ui.tabs.selectedTabViewItem!.view!
+            let instruction = content.subviews.compactMap { $0 as? NSTextField }.first!
+            let diagnostic =
+                "window=\(editorApp.window.contentView!.frame), split=\(split.frame), content=\(content.bounds), instruction=\(instruction.frame)"
+            try require(
+                abs(split.frame.minX - content.bounds.minX) <= 1
+                    && abs(split.frame.width - content.bounds.width) <= 1
+                    && abs(tableScroll.frame.width - split.bounds.width) <= 1,
+                "event table and split fill the available width: \(diagnostic)")
+            try require(
+                abs(split.frame.minY - content.bounds.minY) <= 1
+                    && abs(split.frame.maxY - (instruction.frame.minY - 10)) <= 1,
+                "event split fills the space below the instruction: \(diagnostic)")
+            try require(
+                tableScroll.frame.height >= 110
+                    && split.arrangedSubviews[1].frame.height >= 100,
+                "event table and details retain their minimum heights: \(diagnostic)")
+        }
         ui.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         try require(!ui.details.string.isEmpty, "native details")
         let eventID = ui.events[0]["uid"] as! String
