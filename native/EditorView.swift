@@ -5,12 +5,14 @@ private final class FlippedDocumentView: NSView {
 }
 
 // Every view in this controller is AppKit. Calendar text is always plain text.
-final class EditorViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
+final class EditorViewController: NSViewController, NSMenuItemValidation, NSTableViewDataSource,
+    NSTableViewDelegate,
     NSTextFieldDelegate
 {
     var onChange: (([String: Any]) -> Void)?
     var onInclude: ((String, Bool) -> Void)?
-    var onExport: ((Bool) -> Void)?
+    var onExport: ((Bool, String?) -> Void)?
+    var canExport: (() -> Bool)?
     private(set) var editor: [String: Any] = [:]
     private(set) var events: [[String: Any]] = []
     private var suggestions: [[String: Any]] = []
@@ -25,6 +27,11 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
     let mode = NSPopUpButton()
     let theme = NSPopUpButton()
     let resolution = NSPopUpButton()
+    private var customSizeAlert: NSAlert?
+    private let customWidth = NSTextField()
+    private let customHeight = NSTextField()
+    let displayResolution = NSButton(title: "Use display resolution", target: nil, action: nil)
+    let displaySizes = NSTextField(wrappingLabelWithString: "")
     let course = NSPopUpButton()
     let name = NSTextField()
     let start = NSDatePicker()
@@ -69,6 +76,33 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
         control.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return stack
     }
+    private func dateField(_ title: String, _ picker: NSDatePicker) -> NSStackView {
+        // Keep a native text-field bezel while giving the date segments a larger inset.
+        let container = NSView()
+        let bezel = NSTextField()
+        bezel.isEditable = false
+        bezel.isSelectable = false
+        bezel.setAccessibilityElement(false)
+        picker.isBezeled = false
+        picker.isBordered = false
+        picker.drawsBackground = false
+        for view in [bezel, picker] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            bezel.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            bezel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -21),
+            bezel.topAnchor.constraint(equalTo: container.topAnchor),
+            bezel.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            picker.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 6),
+            picker.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            picker.topAnchor.constraint(equalTo: container.topAnchor),
+            picker.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        picker.setAccessibilityLabel(title)
+        return field(title, container)
+    }
     private func scroll(_ content: NSView) -> NSScrollView {
         let document = FlippedDocumentView()
         document.addSubview(content)
@@ -110,12 +144,14 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
             control.action = #selector(changeControl(_:))
         }
         moduleFields = Self.stack([
-            field("Module name", name), field("First day", start), field("Last day", end),
+            field("Module name", name), dateField("First day", start), dateField("Last day", end),
         ])
         monthField = field("Month", month)
         exportMenu.addItem(withTitle: "Export")
         for (title, action) in [
             ("PNG · Current appearance…", #selector(exportPNG)),
+            ("PNG · Light…", #selector(exportLightPNG)),
+            ("PNG · Dark…", #selector(exportDarkPNG)),
             ("HEIC · Light and dark…", #selector(exportHEIC)),
         ] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
@@ -123,12 +159,20 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
             exportMenu.menu?.addItem(item)
         }
         exportMenu.setAccessibilityLabel("Export wallpaper")
+        displaySizes.font = .systemFont(ofSize: 11)
+        displaySizes.textColor = .secondaryLabelColor
+        displaySizes.isHidden = true
         appearanceFields = Self.stack(
             [
-                field("Preview appearance", theme), field("Image size", resolution), showTitle,
+                field("Preview appearance", theme),
+                field(
+                    "Image size",
+                    Self.stack([resolution, displayResolution, displaySizes], spacing: 6)),
+                showTitle,
                 rooms, iconSpace,
             ], spacing: 14)
         appearanceFields.isHidden = true
+        displaySizes.widthAnchor.constraint(equalTo: resolution.widthAnchor).isActive = true
         appearanceToggle.setButtonType(.onOff)
         appearanceToggle.isBordered = false
         appearanceToggle.image = NSImage(
@@ -163,7 +207,7 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
 
         preview.imageScaling = .scaleProportionallyUpOrDown
         preview.setAccessibilityLabel(
-            "Wallpaper preview. Full event information is available in Choose events.")
+            "Wallpaper preview. Full event information is available in Exclude events.")
         preview.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         preview.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         let previewTab = NSTabViewItem(identifier: "preview")
@@ -232,7 +276,7 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
             eventSplit.trailingAnchor.constraint(equalTo: eventView.trailingAnchor),
         ])
         let eventTab = NSTabViewItem(identifier: "events")
-        eventTab.label = "Choose events"
+        eventTab.label = "Exclude events"
         eventTab.view = eventView
         tabs.addTabViewItem(eventTab)
 
@@ -309,12 +353,7 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
         rooms.state = editor["rooms"] as? Bool == true ? .on : .off
         includeWeekends.state = editor["includeWeekends"] as? Bool == true ? .on : .off
         iconSpace.state = editor["iconSpace"] as? Bool == true ? .on : .off
-        let size = "\(editor["width"] as? Int ?? 3024) × \(editor["height"] as? Int ?? 1964)"
-        resolution.removeAllItems()
-        for value in [
-            size, "3024 × 1964", "3456 × 2234", "2560 × 1440", "3840 × 2160", "1920 × 1080",
-        ] where resolution.item(withTitle: value) == nil { resolution.addItem(withTitle: value) }
-        resolution.selectItem(withTitle: size)
+        updateResolutionMenu()
         let filter = editor["course"] as? String ?? ""
         let configured = snapshot["courseCode"] as? String ?? ""
         course.removeAllItems()
@@ -332,6 +371,7 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
                 ?? 0)
         let included = snapshot["includedCount"] as? Int ?? 0
         summary.stringValue = "\(included) events included · \(events.count - included) excluded"
+        let size = "\(editor["width"] as? Int ?? 3024) × \(editor["height"] as? Int ?? 1964)"
         summary.toolTip = "Snapshot \(editor["snapshotDate"] as? String ?? "none") · \(size)"
         warning.stringValue = (snapshot["warnings"] as? [String] ?? []).joined(separator: "\n")
         warningScroll.isHidden = warning.stringValue.isEmpty
@@ -350,6 +390,52 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
             reloadSuggestions()
         }
     }
+    func updateResolutionMenu() {
+        let size = "\(editor["width"] as? Int ?? 3024) × \(editor["height"] as? Int ?? 1964)"
+        resolution.removeAllItems()
+        for value in [
+            size, "3024 × 1964", "3456 × 2234", "2560 × 1440", "3840 × 2160", "1920 × 1080",
+        ] where resolution.item(withTitle: value) == nil { resolution.addItem(withTitle: value) }
+        resolution.menu?.addItem(.separator())
+        resolution.addItem(withTitle: "Custom…")
+        resolution.selectItem(withTitle: size)
+    }
+    private func showCustomSize() {
+        updateResolutionMenu()
+        guard customSizeAlert == nil, let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Custom image size"
+        alert.informativeText = "Enter whole pixels. Width: 1280–7680. Height: 720–4320."
+        alert.addButton(withTitle: "Use size")
+        alert.addButton(withTitle: "Cancel")
+        customWidth.stringValue = String(editor["width"] as? Int ?? 3024)
+        customHeight.stringValue = String(editor["height"] as? Int ?? 1964)
+        for control in [customWidth, customHeight] { control.delegate = self }
+        let fields = Self.stack([
+            field("Width in pixels", customWidth), field("Height in pixels", customHeight),
+        ])
+        fields.frame = NSRect(x: 0, y: 0, width: 280, height: 110)
+        alert.accessoryView = fields
+        customSizeAlert = alert
+        alert.window.initialFirstResponder = customWidth
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.customSizeAlert = nil
+            guard response == .alertFirstButtonReturn,
+                let width = Int(self.customWidth.stringValue),
+                let height = Int(self.customHeight.stringValue),
+                (1280...7680).contains(width), (720...4320).contains(height)
+            else { return }
+            self.onChange?(["width": width, "height": height])
+        }
+    }
+    func controlTextDidChange(_ notification: Notification) {
+        guard let alert = customSizeAlert else { return }
+        let width = Int(customWidth.stringValue) ?? 0
+        let height = Int(customHeight.stringValue) ?? 0
+        alert.buttons.first?.isEnabled =
+            (1280...7680).contains(width) && (720...4320).contains(height)
+    }
     @objc func changeControl(_ sender: NSControl) {
         var patch: [String: Any] = [:]
         switch sender {
@@ -362,6 +448,10 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
             }
         case course: patch["course"] = course.selectedItem?.representedObject as? String ?? ""
         case resolution:
+            if resolution.titleOfSelectedItem == "Custom…" {
+                showCustomSize()
+                return
+            }
             let values =
                 resolution.titleOfSelectedItem?.components(separatedBy: " × ").compactMap(Int.init)
                 ?? []
@@ -396,11 +486,22 @@ final class EditorViewController: NSViewController, NSTableViewDataSource, NSTab
     }
     @objc func exportPNG() {
         view.window?.makeFirstResponder(nil)
-        onExport?(false)
+        onExport?(false, nil)
+    }
+    @objc func exportLightPNG() {
+        view.window?.makeFirstResponder(nil)
+        onExport?(false, "light")
+    }
+    @objc func exportDarkPNG() {
+        view.window?.makeFirstResponder(nil)
+        onExport?(false, "dark")
+    }
+    @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        canExport?() ?? false
     }
     @objc func exportHEIC() {
         view.window?.makeFirstResponder(nil)
-        onExport?(true)
+        onExport?(true, nil)
     }
     @objc func showSuggestions() { tabs.selectTabViewItem(withIdentifier: "suggestions") }
     func closeDetails() { tabs.selectTabViewItem(withIdentifier: "preview") }

@@ -124,6 +124,11 @@ func screenID(_ screen: NSScreen) -> String {
     return String(number)
 }
 
+func wallpaperPixelSize(_ screen: NSScreen) -> NSSize {
+    // Use the current backing pixels, not the scaled desktop size in points.
+    screen.convertRectToBacking(NSRect(origin: .zero, size: screen.frame.size)).size
+}
+
 struct WallpaperBackup: Codable {
     let screen: String
     let url: URL?
@@ -175,8 +180,7 @@ func workspaceDirectory() -> URL {
     if Bundle.main.bundleURL.pathExtension == "app" {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
             0]
-        return root.appendingPathComponent(
-            Bundle.main.bundleIdentifier ?? "com.samuelkremer.wapacal", isDirectory: true)
+        return root.appendingPathComponent("Wapacal", isDirectory: true)
     }
     return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(
         "output", isDirectory: true)
@@ -190,6 +194,24 @@ func recoveryDirectory() -> URL {
 }
 func wallpapersDirectory() -> URL {
     workspaceDirectory().appendingPathComponent("wallpapers", isDirectory: true)
+}
+
+func wallpaperSharesAllSpacesAndDisplays() -> Bool {
+    let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("com.apple.wallpaper/Store/Index.plist")
+    guard let data = try? Data(contentsOf: url) else { return false }
+    return wallpaperSharesAllSpacesAndDisplays(in: data)
+}
+
+func wallpaperSharesAllSpacesAndDisplays(in data: Data) -> Bool {
+    guard
+        let plist = try? PropertyListSerialization.propertyList(
+            from: data, options: [], format: nil),
+        let root = plist as? [String: Any],
+        let shared = root["AllSpacesAndDisplays"]
+    else { return false }
+    // WallpaperAgent uses the literal string "$null" when sharing is disabled.
+    return shared is [String: Any]
 }
 func appliedDirectory() -> URL {
     wallpapersDirectory().appendingPathComponent("applied", isDirectory: true)
@@ -226,7 +248,7 @@ func previousApplicationSupportDirectories() -> [URL] {
     if ProcessInfo.processInfo.environment["WAPACAL_APP_SUPPORT"] != nil { return [] }
     guard Bundle.main.bundleURL.pathExtension == "app" else { return [] }
     let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    return ["local.wapacal.app", "local.timetable.wallpaper"].map {
+    return ["com.samuelkremer.wapacal", "local.wapacal.app", "local.timetable.wallpaper"].map {
         root.appendingPathComponent($0, isDirectory: true)
     }
 }
@@ -340,7 +362,9 @@ func cleanupRuntimeFiles() throws {
             NSWorkspace.shared.desktopImageURL(for: $0)?.standardizedFileURL.path
         })
     try trimFiles(
-        in: appliedDirectory(), matching: { $0.hasSuffix(".heic") }, keeping: 24, protected: active)
+        in: appliedDirectory(),
+        matching: { $0.hasSuffix(".heic") && !$0.hasPrefix("display-") },
+        keeping: 10, protected: active)
     try trimFiles(
         in: recoveryDirectory(),
         matching: { $0.hasPrefix("restored-") || $0.hasPrefix("unavailable-") }, keeping: 20)
@@ -395,16 +419,47 @@ func applyWallpaper(_ url: URL, screen: NSScreen) throws -> Bool {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(WallpaperBackup(screen: screen)).write(to: backup, options: .atomic)
     }
-    // A new filename prevents macOS reusing a cached render of the previous file.
-    let applied = appliedDirectory()
-    let copy = applied.appendingPathComponent("wapacal-\(UUID().uuidString).heic")
+    let previous = WallpaperBackup(screen: screen)
+    // Alternate two URLs per display. Reapplying the current URL can keep a stale
+    // render on macOS, while a fresh UUID on every update fills up Your Photos.
+    let first = appliedDirectory().appendingPathComponent("display-\(screenID(screen))-a.heic")
+    let second = appliedDirectory().appendingPathComponent("display-\(screenID(screen))-b.heic")
+    let copy = previous.url?.standardizedFileURL == first.standardizedFileURL ? second : first
+    let previousData =
+        FileManager.default.fileExists(atPath: copy.path)
+        ? try readBounded(copy) : nil
     try data.write(to: copy, options: .atomic)
-    try NSWorkspace.shared.setDesktopImageURL(
-        copy, for: screen,
-        options: [
-            .imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue,
-            .allowClipping: false,
-        ])
+    do {
+        try NSWorkspace.shared.setDesktopImageURL(
+            copy, for: screen,
+            options: [
+                .imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue,
+                .allowClipping: false,
+            ])
+        // WallpaperAgent applies the request asynchronously. Do not let a later
+        // screen change race this assignment or report success before macOS has it.
+        let deadline = Date().addingTimeInterval(3)
+        while NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL
+            != copy.standardizedFileURL && Date() < deadline
+        {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard
+            NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL
+                == copy.standardizedFileURL
+        else {
+            throw WallpaperError.invalid(
+                "macOS did not confirm the wallpaper for \(screen.localizedName).")
+        }
+    } catch {
+        // Restore the reused file and previous selection if macOS rejects the update.
+        if let previousData { try? previousData.write(to: copy, options: .atomic) }
+        if let original = previous.url, previous.canRestore {
+            try? NSWorkspace.shared.setDesktopImageURL(
+                original, for: screen, options: previous.options)
+        }
+        throw error
+    }
     let record = try JSONDecoder().decode(WallpaperBackup.self, from: Data(contentsOf: backup))
     try? cleanupRuntimeFiles()
     return record.canRestore
@@ -598,6 +653,11 @@ final class WallpaperApp: NSObject, NSApplicationDelegate {
     @objc func apply() {
         guard let selected else { return }
         do {
+            guard !wallpaperSharesAllSpacesAndDisplays() else {
+                throw WallpaperError.invalid(
+                    "macOS is set to show one wallpaper on all Spaces and displays. Turn off “Show on all Spaces” in System Settings → Wallpaper before applying separate display wallpapers."
+                )
+            }
             let canRestore = try applyWallpaper(selected, screen: targetScreen())
             status.stringValue =
                 canRestore
