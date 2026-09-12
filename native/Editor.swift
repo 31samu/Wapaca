@@ -844,15 +844,7 @@ final class StatusLabel: NSTextField {
             return
         }
         if resolution.item(withTitle: "Use screen sizes") != nil {
-            resolution.removeAllItems()
-            let editor = editorView.editor
-            let size = "\(editor["width"] as? Int ?? 3024) × \(editor["height"] as? Int ?? 1964)"
-            for value in [
-                size, "3024 × 1964", "3456 × 2234", "2560 × 1440", "3840 × 2160", "1920 × 1080",
-            ] where resolution.item(withTitle: value) == nil {
-                resolution.addItem(withTitle: value)
-            }
-            resolution.selectItem(withTitle: size)
+            editorView.updateResolutionMenu()
         }
         resolution.isEnabled = ready
         guard let screen = try? targetScreen() else {

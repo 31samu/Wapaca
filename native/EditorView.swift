@@ -27,6 +27,9 @@ final class EditorViewController: NSViewController, NSMenuItemValidation, NSTabl
     let mode = NSPopUpButton()
     let theme = NSPopUpButton()
     let resolution = NSPopUpButton()
+    private var customSizeAlert: NSAlert?
+    private let customWidth = NSTextField()
+    private let customHeight = NSTextField()
     let displayResolution = NSButton(title: "Use display resolution", target: nil, action: nil)
     let displaySizes = NSTextField(wrappingLabelWithString: "")
     let course = NSPopUpButton()
@@ -350,12 +353,7 @@ final class EditorViewController: NSViewController, NSMenuItemValidation, NSTabl
         rooms.state = editor["rooms"] as? Bool == true ? .on : .off
         includeWeekends.state = editor["includeWeekends"] as? Bool == true ? .on : .off
         iconSpace.state = editor["iconSpace"] as? Bool == true ? .on : .off
-        let size = "\(editor["width"] as? Int ?? 3024) × \(editor["height"] as? Int ?? 1964)"
-        resolution.removeAllItems()
-        for value in [
-            size, "3024 × 1964", "3456 × 2234", "2560 × 1440", "3840 × 2160", "1920 × 1080",
-        ] where resolution.item(withTitle: value) == nil { resolution.addItem(withTitle: value) }
-        resolution.selectItem(withTitle: size)
+        updateResolutionMenu()
         let filter = editor["course"] as? String ?? ""
         let configured = snapshot["courseCode"] as? String ?? ""
         course.removeAllItems()
@@ -373,6 +371,7 @@ final class EditorViewController: NSViewController, NSMenuItemValidation, NSTabl
                 ?? 0)
         let included = snapshot["includedCount"] as? Int ?? 0
         summary.stringValue = "\(included) events included · \(events.count - included) excluded"
+        let size = "\(editor["width"] as? Int ?? 3024) × \(editor["height"] as? Int ?? 1964)"
         summary.toolTip = "Snapshot \(editor["snapshotDate"] as? String ?? "none") · \(size)"
         warning.stringValue = (snapshot["warnings"] as? [String] ?? []).joined(separator: "\n")
         warningScroll.isHidden = warning.stringValue.isEmpty
@@ -391,6 +390,52 @@ final class EditorViewController: NSViewController, NSMenuItemValidation, NSTabl
             reloadSuggestions()
         }
     }
+    func updateResolutionMenu() {
+        let size = "\(editor["width"] as? Int ?? 3024) × \(editor["height"] as? Int ?? 1964)"
+        resolution.removeAllItems()
+        for value in [
+            size, "3024 × 1964", "3456 × 2234", "2560 × 1440", "3840 × 2160", "1920 × 1080",
+        ] where resolution.item(withTitle: value) == nil { resolution.addItem(withTitle: value) }
+        resolution.menu?.addItem(.separator())
+        resolution.addItem(withTitle: "Custom…")
+        resolution.selectItem(withTitle: size)
+    }
+    private func showCustomSize() {
+        updateResolutionMenu()
+        guard customSizeAlert == nil, let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Custom image size"
+        alert.informativeText = "Enter whole pixels. Width: 1280–7680. Height: 720–4320."
+        alert.addButton(withTitle: "Use size")
+        alert.addButton(withTitle: "Cancel")
+        customWidth.stringValue = String(editor["width"] as? Int ?? 3024)
+        customHeight.stringValue = String(editor["height"] as? Int ?? 1964)
+        for control in [customWidth, customHeight] { control.delegate = self }
+        let fields = Self.stack([
+            field("Width in pixels", customWidth), field("Height in pixels", customHeight),
+        ])
+        fields.frame = NSRect(x: 0, y: 0, width: 280, height: 110)
+        alert.accessoryView = fields
+        customSizeAlert = alert
+        alert.window.initialFirstResponder = customWidth
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.customSizeAlert = nil
+            guard response == .alertFirstButtonReturn,
+                let width = Int(self.customWidth.stringValue),
+                let height = Int(self.customHeight.stringValue),
+                (1280...7680).contains(width), (720...4320).contains(height)
+            else { return }
+            self.onChange?(["width": width, "height": height])
+        }
+    }
+    func controlTextDidChange(_ notification: Notification) {
+        guard let alert = customSizeAlert else { return }
+        let width = Int(customWidth.stringValue) ?? 0
+        let height = Int(customHeight.stringValue) ?? 0
+        alert.buttons.first?.isEnabled =
+            (1280...7680).contains(width) && (720...4320).contains(height)
+    }
     @objc func changeControl(_ sender: NSControl) {
         var patch: [String: Any] = [:]
         switch sender {
@@ -403,6 +448,10 @@ final class EditorViewController: NSViewController, NSMenuItemValidation, NSTabl
             }
         case course: patch["course"] = course.selectedItem?.representedObject as? String ?? ""
         case resolution:
+            if resolution.titleOfSelectedItem == "Custom…" {
+                showCustomSize()
+                return
+            }
             let values =
                 resolution.titleOfSelectedItem?.components(separatedBy: " × ").compactMap(Int.init)
                 ?? []

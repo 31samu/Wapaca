@@ -362,7 +362,9 @@ func cleanupRuntimeFiles() throws {
             NSWorkspace.shared.desktopImageURL(for: $0)?.standardizedFileURL.path
         })
     try trimFiles(
-        in: appliedDirectory(), matching: { $0.hasSuffix(".heic") }, keeping: 10, protected: active)
+        in: appliedDirectory(),
+        matching: { $0.hasSuffix(".heic") && !$0.hasPrefix("display-") },
+        keeping: 10, protected: active)
     try trimFiles(
         in: recoveryDirectory(),
         matching: { $0.hasPrefix("restored-") || $0.hasPrefix("unavailable-") }, keeping: 20)
@@ -417,30 +419,46 @@ func applyWallpaper(_ url: URL, screen: NSScreen) throws -> Bool {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(WallpaperBackup(screen: screen)).write(to: backup, options: .atomic)
     }
-    // A new filename prevents macOS reusing a cached render of the previous file.
-    let applied = appliedDirectory()
-    let copy = applied.appendingPathComponent("wapacal-\(UUID().uuidString).heic")
+    let previous = WallpaperBackup(screen: screen)
+    // Alternate two URLs per display. Reapplying the current URL can keep a stale
+    // render on macOS, while a fresh UUID on every update fills up Your Photos.
+    let first = appliedDirectory().appendingPathComponent("display-\(screenID(screen))-a.heic")
+    let second = appliedDirectory().appendingPathComponent("display-\(screenID(screen))-b.heic")
+    let copy = previous.url?.standardizedFileURL == first.standardizedFileURL ? second : first
+    let previousData =
+        FileManager.default.fileExists(atPath: copy.path)
+        ? try readBounded(copy) : nil
     try data.write(to: copy, options: .atomic)
-    try NSWorkspace.shared.setDesktopImageURL(
-        copy, for: screen,
-        options: [
-            .imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue,
-            .allowClipping: false,
-        ])
-    // WallpaperAgent applies the request asynchronously. Do not let a later
-    // screen change race this assignment or report success before macOS has it.
-    let deadline = Date().addingTimeInterval(3)
-    while NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL
-        != copy.standardizedFileURL && Date() < deadline
-    {
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-    }
-    guard
-        NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL
-            == copy.standardizedFileURL
-    else {
-        throw WallpaperError.invalid(
-            "macOS did not confirm the wallpaper for \(screen.localizedName).")
+    do {
+        try NSWorkspace.shared.setDesktopImageURL(
+            copy, for: screen,
+            options: [
+                .imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue,
+                .allowClipping: false,
+            ])
+        // WallpaperAgent applies the request asynchronously. Do not let a later
+        // screen change race this assignment or report success before macOS has it.
+        let deadline = Date().addingTimeInterval(3)
+        while NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL
+            != copy.standardizedFileURL && Date() < deadline
+        {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard
+            NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL
+                == copy.standardizedFileURL
+        else {
+            throw WallpaperError.invalid(
+                "macOS did not confirm the wallpaper for \(screen.localizedName).")
+        }
+    } catch {
+        // Restore the reused file and previous selection if macOS rejects the update.
+        if let previousData { try? previousData.write(to: copy, options: .atomic) }
+        if let original = previous.url, previous.canRestore {
+            try? NSWorkspace.shared.setDesktopImageURL(
+                original, for: screen, options: previous.options)
+        }
+        throw error
     }
     let record = try JSONDecoder().decode(WallpaperBackup.self, from: Data(contentsOf: backup))
     try? cleanupRuntimeFiles()

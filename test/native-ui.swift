@@ -7,12 +7,22 @@ import WebKit
 func require(_ value: @autoclosure () -> Bool, _ message: String) throws {
     if !value() { throw WallpaperError.invalid("Native UI test failed: " + message) }
 }
+func supportsImageSize(_ size: NSSize) -> Bool {
+    (1280...7680).contains(Int(size.width)) && (720...4320).contains(Int(size.height))
+}
 @MainActor
 func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
 
 let application = NSApplication.shared
 let editorApp = MainActor.assumeIsolated { EditorApp() }
 application.delegate = editorApp
+@MainActor
+func hideTestApplication() {
+    // Reopen checks request activation just before shutdown. Withdraw the fixture
+    // from the Dock explicitly before exiting, including when an assertion fails.
+    application.hide(nil)
+    application.setActivationPolicy(.prohibited)
+}
 Task { @MainActor in
     do {
         let deadline = Date().addingTimeInterval(40)
@@ -63,27 +73,44 @@ Task { @MainActor in
                 at: editorApp.screenPicker.itemArray.firstIndex {
                     $0.representedObject as? String == screenID(screen)
                 }!)
+            let previousSize = ui.resolution.titleOfSelectedItem
+            let size = wallpaperPixelSize(screen)
+            let screenSize = "\(Int(size.width)) × \(Int(size.height))"
+            let expectedSize = supportsImageSize(size) ? screenSize : previousSize
             editorApp.changeScreen()
             while editorApp.pendingEdits > 0 { try await Task.sleep(nanoseconds: 50_000_000) }
-            let size = wallpaperPixelSize(screen)
             try require(
-                ui.resolution.titleOfSelectedItem == "\(Int(size.width)) × \(Int(size.height))",
-                "a display without a saved size uses its own resolution")
+                ui.resolution.titleOfSelectedItem == expectedSize,
+                "display \(screen.localizedName) at \(screenSize): expected \(expectedSize ?? "nil"), got \(ui.resolution.titleOfSelectedItem ?? "nil")"
+            )
+            try require(
+                ui.displayResolution.isEnabled == supportsImageSize(size),
+                "display resolution button availability for \(screenSize)")
             try require(
                 ui.displayResolution.title == "Use \(Int(size.width)) × \(Int(size.height))",
                 "display pixel suggestion")
             print(
                 "Display: \(screen.localizedName), \(Int(size.width)) × \(Int(size.height)) pixels")
         }
-        ui.displayResolution.performClick(nil)
-        while editorApp.pendingEdits > 0 { try await Task.sleep(nanoseconds: 50_000_000) }
         let selectedSize = wallpaperPixelSize(try editorApp.targetScreen())
+        let previousWidth = ui.editor["width"] as? Int
+        let previousHeight = ui.editor["height"] as? Int
+        if supportsImageSize(selectedSize) {
+            ui.displayResolution.performClick(nil)
+        } else {
+            // A direct invocation must also reject sizes unavailable through the button.
+            editorApp.useDisplayResolution()
+        }
+        while editorApp.pendingEdits > 0 { try await Task.sleep(nanoseconds: 50_000_000) }
+        let expectedWidth =
+            supportsImageSize(selectedSize) ? Int(selectedSize.width) : previousWidth
+        let expectedHeight =
+            supportsImageSize(selectedSize) ? Int(selectedSize.height) : previousHeight
         try require(
-            ui.editor["width"] as? Int == Int(selectedSize.width), "resolution button changes width"
+            ui.editor["width"] as? Int == expectedWidth
+                && ui.editor["height"] as? Int == expectedHeight,
+            "use display resolution: expected \(String(describing: expectedWidth)) × \(String(describing: expectedHeight)), got \(String(describing: ui.editor["width"])) × \(String(describing: ui.editor["height"]))"
         )
-        try require(
-            ui.editor["height"] as? Int == Int(selectedSize.height),
-            "resolution button changes height")
         for (index, screen) in NSScreen.screens.enumerated() {
             editorApp.screenPicker.selectItem(at: index)
             editorApp.changeScreen()
@@ -129,6 +156,20 @@ Task { @MainActor in
                 ui.displaySizes.stringValue.contains(
                     "\(screen.localizedName): \(Int(size.width)) × \(Int(size.height))"),
                 "each screen's size is visible")
+            if !supportsImageSize(size) {
+                let error =
+                    try await editorApp.js(
+                        "try { await window.nativePair(size); return ''; } catch (error) { return error.message; }",
+                        ["size": ["width": Int(size.width), "height": Int(size.height)]],
+                        updates: false
+                    ) as? String
+                try require(
+                    error?.contains("Use an image between 1280 × 720 and 7680 × 4320 pixels.")
+                        == true,
+                    "unsupported display render must report the image size limits, got \(error ?? "nil")"
+                )
+                continue
+            }
             let pair =
                 try await editorApp.js(
                     "return await window.nativePair(size)",
@@ -144,7 +185,7 @@ Task { @MainActor in
         try require(
             ui.editor["width"] as? Int == 2880 && ui.editor["height"] as? Int == 1800,
             "per-display render preserves editor size")
-        for screen in NSScreen.screens {
+        for (index, screen) in NSScreen.screens.enumerated() {
             editorApp.screenPicker.selectItem(
                 at: editorApp.screenPicker.itemArray.firstIndex {
                     $0.representedObject as? String == screenID(screen)
@@ -156,12 +197,14 @@ Task { @MainActor in
                 try await Task.sleep(nanoseconds: 50_000_000)
             }
             let size = wallpaperPixelSize(screen)
+            let width = supportsImageSize(size) ? Int(size.width) : 2560 + index * 128
+            let height = supportsImageSize(size) ? Int(size.height) : 1440
             try require(
-                ui.editor["width"] as? Int == Int(size.width)
-                    && ui.editor["height"] as? Int == Int(size.height),
-                "leaving all displays adopts the selected screen's size")
+                ui.editor["width"] as? Int == width && ui.editor["height"] as? Int == height,
+                "leaving all displays restores saved size: expected \(width) × \(height), got \(String(describing: ui.editor["width"])) × \(String(describing: ui.editor["height"]))"
+            )
             try require(
-                ui.resolution.titleOfSelectedItem == "\(Int(size.width)) × \(Int(size.height))",
+                ui.resolution.titleOfSelectedItem == "\(width) × \(height)",
                 "selected screen size is reflected in the size menu")
             editorApp.screenPicker.selectItem(withTitle: "All connected displays")
             editorApp.changeScreen()
@@ -193,7 +236,42 @@ Task { @MainActor in
                 try require(
                     info.width == Int(size.width) && info.height == Int(size.height),
                     "live wallpaper dimensions for \(screen.localizedName)")
+                let originalData = try readBounded(url)
+                let source = CGImageSourceCreateWithData(originalData as CFData, nil)!
+                let changed = wallpapersDirectory().appendingPathComponent("refresh-test.heic")
+                // Swap appearances to ensure subsequent updates contain changed content.
+                try encodePair(
+                    light: CGImageSourceCreateImageAtIndex(source, 1, nil)!,
+                    dark: CGImageSourceCreateImageAtIndex(source, 0, nil)!, to: changed)
+                let changedData = try readBounded(changed)
+                try require(changedData != originalData, "refresh fixture has different content")
+                let backupData = try Data(contentsOf: backupURL(screen))
+                var updateURLs: Set<URL> = [url.standardizedFileURL]
+                for index in 0..<4 {
+                    // Change both slots, then change both again to exercise reused files.
+                    let expectedData = index < 2 ? changedData : originalData
+                    try expectedData.write(to: changed, options: .atomic)
+                    let previousURL = NSWorkspace.shared.desktopImageURL(for: screen)
+                    _ = try applyWallpaper(changed, screen: screen)
+                    let updatedURL = NSWorkspace.shared.desktopImageURL(for: screen)!
+                    try require(
+                        updatedURL.standardizedFileURL != previousURL?.standardizedFileURL,
+                        "each update changes the URL to avoid the active image cache")
+                    updateURLs.insert(updatedURL.standardizedFileURL)
+                    try require(updateURLs.count <= 2, "updates reuse at most two display URLs")
+                    let appliedData = try readBounded(updatedURL)
+                    try require(appliedData == expectedData, "repeated update writes the new image")
+                    _ = try inspectData(appliedData)
+                    let savedBackup = try Data(contentsOf: backupURL(screen))
+                    try require(savedBackup == backupData, "refresh preserves the original backup")
+                }
+                try require(updateURLs.count == 2, "updates alternate URLs to refresh the cache")
             }
+            let appliedFiles = try FileManager.default.contentsOfDirectory(
+                at: appliedDirectory(), includingPropertiesForKeys: nil)
+            try require(
+                appliedFiles.filter { $0.pathExtension == "heic" }.count == screens.count * 2,
+                "repeated updates keep two wallpaper files per display")
             editorApp.restore()
             for (screen, original) in zip(screens, originals) {
                 try require(
@@ -269,6 +347,49 @@ Task { @MainActor in
         try require(
             ui.resolution.titleOfSelectedItem == "2880 × 1800" && ui.resolution.isEnabled,
             "returning to one display restores the custom size control")
+        try require(ui.resolution.item(withTitle: "Custom…") != nil, "custom size menu option")
+        editorApp.saved["screen"] = screenID(NSScreen.screens[0])
+        editorApp.updateScreens()
+        for accept in [false, true] {
+            ui.resolution.selectItem(withTitle: "Custom…")
+            ui.changeControl(ui.resolution)
+            guard let sheet = editorApp.window.attachedSheet else {
+                throw WallpaperError.invalid("Custom image size sheet did not open")
+            }
+            let fields = descendants(sheet.contentView!).compactMap { $0 as? NSTextField }
+                .filter { $0.isEditable }
+            try require(fields.count == 2, "custom size has width and height fields")
+            try require(
+                fields[0].stringValue == "2880" && fields[1].stringValue == "1800",
+                "custom size starts with current dimensions")
+            let useSize = descendants(sheet.contentView!).compactMap { $0 as? NSButton }
+                .first { $0.title == "Use size" }!
+            for invalid in ["", "abc", "1280.5", "1279", "7681"] {
+                fields[0].stringValue = invalid
+                ui.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+                try require(!useSize.isEnabled, "invalid custom width is rejected: \(invalid)")
+            }
+            fields[0].stringValue = "3200"
+            fields[1].stringValue = "4321"
+            ui.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+            try require(!useSize.isEnabled, "invalid custom height is rejected")
+            fields[1].stringValue = "2000"
+            ui.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+            try require(useSize.isEnabled, "valid custom size is accepted")
+            editorApp.window.endSheet(
+                sheet, returnCode: accept ? .alertFirstButtonReturn : .alertSecondButtonReturn)
+            try await Task.sleep(nanoseconds: 300_000_000)
+            while editorApp.pendingEdits > 0 { try await Task.sleep(nanoseconds: 50_000_000) }
+            try require(
+                ui.resolution.titleOfSelectedItem == (accept ? "3200 × 2000" : "2880 × 1800"),
+                "custom size applies only when confirmed")
+        }
+        try require(
+            (editorApp.saved["displaySizes"] as? [String: [String: Int]])?[
+                screenID(NSScreen.screens[0])] == ["width": 3200, "height": 2000],
+            "custom menu size is remembered for the selected display")
+        editorApp.queueEditorPatch(["width": 2880, "height": 1800], automaticApply: false)
+        while editorApp.pendingEdits > 0 { try await Task.sleep(nanoseconds: 50_000_000) }
         try require(ui.showTitle.state == .off, "legacy title default")
         try require(ui.includeWeekends.state == .off, "weekends default off")
         ui.includeWeekends.performClick(nil)
@@ -643,9 +764,11 @@ Task { @MainActor in
         editorApp.show()
         try require(editorApp.window.isVisible, "menu bar reopen")
         print("Native UI and WebKit integration checks passed")
+        hideTestApplication()
         application.terminate(nil)
     } catch {
         fputs(error.localizedDescription + "\n", stderr)
+        hideTestApplication()
         exit(1)
     }
 }
