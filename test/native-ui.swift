@@ -13,6 +13,42 @@ func supportsImageSize(_ size: NSSize) -> Bool {
 @MainActor
 func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
 
+// No EventKit requests or personal calendar access in this fixture app.
+final class FixtureLocalCalendars: LocalCalendarProviding {
+    var hasAccess = true
+    var removed = false
+    var missing = false
+    var temporaryFailure = false
+    var requests: [(String, String)] = []
+    func requestAccess() async throws -> Bool { hasAccess }
+    func calendars() async throws -> [LocalCalendarInfo] {
+        (0..<24).map { index in
+            LocalCalendarInfo(
+                identifier: "fixture-\(index)", title: "Local Calendar \(index)",
+                account: "Fixture Account", color: "#336699")
+        }
+    }
+    func snapshot(identifier: String, from: String, to: String) async throws -> [String: Any] {
+        requests.append((from, to))
+        if missing { throw LocalCalendarError.calendarMissing }
+        if temporaryFailure { throw WallpaperError.invalid("Temporary fixture failure") }
+        return [
+            "version": 1, "coverageStart": from, "coverageEnd": to,
+            "events": removed
+                ? []
+                : [
+                    [
+                        "uid": "fixture-event", "start": "2026-09-08T08:00:00Z",
+                        "end": "2026-09-08T09:00:00Z",
+                        "allDay": false, "title": "Local fixture event",
+                        "summary": "Local fixture event",
+                        "description": "Fixture details", "location": "Fixture room",
+                    ]
+                ],
+        ]
+    }
+}
+
 let application = NSApplication.shared
 let editorApp = MainActor.assumeIsolated { EditorApp() }
 application.delegate = editorApp
@@ -523,6 +559,49 @@ Task { @MainActor in
         try require(!saveBounds.intersects(statusBounds), "save button does not overlap status")
         try require(
             !descendants(settingsRoot).contains { $0 is NSColorWell }, "custom color uses the menu")
+        let subscriptionMenuItems = editorApp.sourcePicker.itemArray
+        try require(
+            subscriptionMenuItems.map(\.title) == ["SUBSCRIPTIONS", "Fixture calendar"],
+            "subscription calendars have a labeled menu section")
+        if #available(macOS 14.0, *) {
+            try require(
+                subscriptionMenuItems[0].isSectionHeader,
+                "calendar menu uses a native section heading")
+        } else {
+            try require(
+                !subscriptionMenuItems[0].isEnabled,
+                "calendar menu heading is disabled on macOS 13")
+        }
+        try require(subscriptionMenuItems[1].image != nil, "subscription calendar has an icon")
+        try require(
+            editorApp.selectedSourceIndex == 0, "menu headings do not change source indexing")
+        editorApp.sourcePicker.selectItem(at: 0)
+        editorApp.selectSource()
+        try require(
+            editorApp.sourcePicker.titleOfSelectedItem == "Fixture calendar",
+            "selecting a section heading restores the calendar")
+        let fixtureSubscription = editorApp.subscriptions[0]
+        editorApp.saved["subscriptions"] =
+            [
+                fixtureSubscription,
+                [
+                    "id": "menu-local", "provider": "eventkit",
+                    "calendarIdentifier": "menu-local", "name": "Local fixture",
+                ],
+            ] as [[String: Any]]
+        editorApp.reloadSources(selected: "legacy")
+        guard
+            let separatorIndex = editorApp.sourcePicker.itemArray.firstIndex(where: {
+                $0.isSeparatorItem
+            })
+        else { throw WallpaperError.invalid("Calendar menu separator is missing") }
+        editorApp.sourcePicker.selectItem(at: separatorIndex)
+        editorApp.selectSource()
+        try require(
+            editorApp.sourcePicker.titleOfSelectedItem == "Fixture calendar",
+            "selecting a separator restores the calendar")
+        editorApp.saved["subscriptions"] = [fixtureSubscription]
+        editorApp.reloadSources(selected: "legacy")
         let settingsImage = settingsRoot.bitmapImageRepForCachingDisplay(in: settingsRoot.bounds)!
         settingsRoot.cacheDisplay(in: settingsRoot.bounds, to: settingsImage)
         try settingsImage.representation(using: .png, properties: [:])!.write(
@@ -533,7 +612,8 @@ Task { @MainActor in
         try require(
             editorApp.settingsWindow.firstResponder is NSTextView,
             "new calendar focuses Settings URL field")
-        editorApp.sourcePicker.selectItem(at: 0)
+        editorApp.sourcePicker.select(
+            editorApp.sourcePicker.itemArray.first { $0.representedObject as? String == "legacy" })
         // Restore the fixture selection without changing saved subscriptions.
         editorApp.selectSource()
         try require(editorApp.sourceEnabled.state == .on, "existing calendars default to enabled")
@@ -781,6 +861,162 @@ Task { @MainActor in
         try require(!editorApp.window.isVisible, "close window")
         editorApp.show()
         try require(editorApp.window.isVisible, "menu bar reopen")
+        let fake = FixtureLocalCalendars()
+        editorApp.localCalendars = fake
+        editorApp.saved["subscriptions"] = [] as [[String: Any]]
+        editorApp.automatic.state = .off
+        editorApp.saveTimer?.invalidate()
+        editorApp.showSettings()
+        editorApp.settingsTabs.selectTabViewItem(withIdentifier: "calendars")
+        _ = try await editorApp.js(
+            "return window.nativeUpdate(patch)",
+            ["patch": ["mode": "month", "month": "2026-09", "course": ""]])
+        fake.hasAccess = false
+        editorApp.chooseLocalCalendars()
+        let recoveryDeadline = Date().addingTimeInterval(10)
+        while editorApp.settingsWindow.attachedSheet == nil && Date() < recoveryDeadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        guard let recovery = editorApp.settingsWindow.attachedSheet,
+            let recoveryRoot = recovery.contentView
+        else {
+            throw WallpaperError.invalid("Calendar access recovery did not open")
+        }
+        let recoveryButtons = descendants(recoveryRoot).compactMap { $0 as? NSButton }
+        try require(
+            recoveryButtons.contains { $0.title == "Open Calendar Settings" },
+            "denied calendar access offers a settings shortcut")
+        recoveryButtons.first { $0.title == "Cancel" }!.performClick(nil)
+        let recoveryCloseDeadline = Date().addingTimeInterval(10)
+        while (editorApp.settingsWindow.attachedSheet != nil || editorApp.fetching)
+            && Date() < recoveryCloseDeadline
+        {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        try require(
+            editorApp.status.stringValue.contains("Calendar access is off"),
+            "denied access explains how to recover")
+        fake.hasAccess = true
+        editorApp.waitingForCalendarAccess = true
+        editorApp.applicationDidBecomeActive(
+            Notification(name: NSApplication.didBecomeActiveNotification))
+        let sheetDeadline = Date().addingTimeInterval(10)
+        while editorApp.settingsWindow.attachedSheet == nil && Date() < sheetDeadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        guard let sheet = editorApp.settingsWindow.attachedSheet, let sheetRoot = sheet.contentView
+        else {
+            throw WallpaperError.invalid("Local calendar picker did not open")
+        }
+        sheetRoot.layoutSubtreeIfNeeded()
+        let pickerButtons = descendants(sheetRoot).compactMap { $0 as? NSButton }
+        let calendarChecks = pickerButtons.filter { $0.title.hasPrefix("Local Calendar ") }
+        try require(calendarChecks.count == 24, "all local calendars are offered")
+        try require(
+            calendarChecks.allSatisfy { $0.state == .off }, "no calendars selected implicitly")
+        if let last = calendarChecks.last,
+            let scroll = descendants(sheetRoot).first(where: { $0 is NSScrollView })
+                as? NSScrollView
+        {
+            last.scrollToVisible(last.bounds)
+            sheetRoot.layoutSubtreeIfNeeded()
+            let lastFrame = last.convert(last.bounds, to: scroll.documentView)
+            try require(
+                scroll.documentVisibleRect.intersects(lastFrame),
+                "last calendar is reachable by scrolling")
+            calendarChecks.first!.scrollToVisible(calendarChecks.first!.bounds)
+        }
+        calendarChecks.first { $0.title == "Local Calendar 0" }!.state = .on
+        let pickerImage = sheetRoot.bitmapImageRepForCachingDisplay(in: sheetRoot.bounds)!
+        sheetRoot.cacheDisplay(in: sheetRoot.bounds, to: pickerImage)
+        try pickerImage.representation(using: .png, properties: [:])!.write(
+            to: URL(fileURLWithPath: ProcessInfo.processInfo.environment["WAPACAL_UI_OUTPUT"]!)
+                .appendingPathComponent("native-local-calendars.png"))
+        pickerButtons.first { $0.title == "Save selection" }!.performClick(nil)
+        @MainActor func waitForLocalRefresh() async throws {
+            let deadline = Date().addingTimeInterval(15)
+            while (editorApp.fetching || editorApp.localRefreshPending) && Date() < deadline {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            try require(!editorApp.fetching, "local refresh completed")
+        }
+        try await waitForLocalRefresh()
+        try require(editorApp.subscriptions.count == 1, "only selected local calendar added")
+        let localMenuItems = editorApp.sourcePicker.itemArray
+        try require(
+            localMenuItems.map(\.title) == ["CALENDARS ON THIS MAC", "Local Calendar 0"],
+            "local calendars have a labeled menu section")
+        try require(localMenuItems[1].image != nil, "local calendar has an icon")
+        try require(
+            editorApp.selectedSourceIndex == 0, "local menu heading preserves source indexing")
+        try require(ui.table.numberOfRows == 1, "local event appears in native checklist")
+        try require(
+            !editorApp.urlField.isEnabled, "local calendars cannot become URL subscriptions")
+        let localID = ui.events[0]["uid"] as! String
+        _ = try await editorApp.js(
+            "return window.nativeInclude(uid,included)", ["uid": localID, "included": false])
+        editorApp.beginRefresh(force: true, localOnly: true)
+        try await waitForLocalRefresh()
+        try require(
+            (ui.editor["excludedEventIds"] as? [String] ?? []).contains(localID),
+            "local exclusion survives refresh")
+        editorApp.saved["nextCheck"] = Date().addingTimeInterval(3600).timeIntervalSince1970
+        let requestCount = fake.requests.count
+        editorApp.tick()
+        try await Task.sleep(nanoseconds: 750_000_000)
+        try require(
+            fake.requests.count == requestCount,
+            "minute UI tick does not force an EventKit query before the refresh interval")
+        editorApp.sourceEnabled.state = .off
+        editorApp.toggleSourceEnabled()
+        try await waitForLocalRefresh()
+        try require(ui.table.numberOfRows == 0, "calendar checkbox hides local events")
+        editorApp.sourceEnabled.state = .on
+        editorApp.toggleSourceEnabled()
+        try await waitForLocalRefresh()
+        try require(ui.table.numberOfRows == 1, "calendar checkbox restores local event checklist")
+        try require(
+            (ui.editor["excludedEventIds"] as? [String] ?? []).contains(localID),
+            "calendar toggle preserves local exclusion")
+        editorApp.queueEditorPatch(["month": "2035-09"])
+        let rangeDeadline = Date().addingTimeInterval(15)
+        while fake.requests.last?.1 ?? "" < "2035-09-30" && Date() < rangeDeadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        try await waitForLocalRefresh()
+        try require(
+            fake.requests.last!.1 > "2035-09-30", "native provider loads newly selected date range")
+        fake.temporaryFailure = true
+        editorApp.beginRefresh(force: true, localOnly: true)
+        try await waitForLocalRefresh()
+        try require(
+            editorApp.subscriptions[0]["snapshot"] != nil, "transient error preserves snapshot")
+        fake.temporaryFailure = false
+        fake.removed = true
+        editorApp.beginRefresh(force: true, localOnly: true)
+        try await waitForLocalRefresh()
+        let emptySnapshot = editorApp.subscriptions[0]["snapshot"] as! [String: Any]
+        try require(
+            (emptySnapshot["events"] as! [[String: Any]]).isEmpty,
+            "deleted events disappear without ICS history")
+        fake.hasAccess = false
+        editorApp.beginRefresh(force: true, localOnly: true)
+        try await waitForLocalRefresh()
+        try require(
+            editorApp.subscriptions[0]["snapshot"] == nil, "revocation clears cached private events"
+        )
+        try require(
+            editorApp.status.stringValue.contains("Calendar access"), "revocation explains recovery"
+        )
+        fake.hasAccess = true
+        fake.missing = true
+        editorApp.beginRefresh(force: true, localOnly: true)
+        try await waitForLocalRefresh()
+        try require(
+            editorApp.subscriptions[0]["snapshot"] == nil,
+            "missing calendars do not keep stale events")
+        editorApp.localCalendarTimer?.invalidate()
+        editorApp.saveTimer?.invalidate()
         print("Native UI and WebKit integration checks passed")
         hideTestApplication()
         application.terminate(nil)

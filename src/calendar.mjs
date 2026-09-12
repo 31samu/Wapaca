@@ -353,6 +353,11 @@ export function reconcileSubscriptions(
   const previousById = new Map(previousSubscriptions.map((source) => [source.id, source]));
 
   return nextSubscriptions.map((source) => {
+    if (source.provider === 'eventkit') {
+      snapshotEvents(source, timeZone);
+      const { history, ...snapshotSource } = source;
+      return snapshotSource;
+    }
     const fresh = source.ics
       ? parseCalendar(source.ics, timeZone, source.kind || 'auto', { today: fetchedAt })
       : { events: [], cancelledUids: [] };
@@ -391,6 +396,70 @@ export function reconcileSubscriptions(
   });
 }
 
+// Native providers supply concrete occurrences, with date-only all-day boundaries.
+function snapshotEvents(source, timeZone) {
+  const snapshot = source.snapshot;
+  if (!snapshot) return [];
+  const validDay = (value) =>
+    typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString().slice(0, 10) === value;
+  if (
+    snapshot.version !== 1 ||
+    !Array.isArray(snapshot.events) ||
+    !validDay(snapshot.coverageStart) ||
+    !validDay(snapshot.coverageEnd) ||
+    snapshot.coverageEnd <= snapshot.coverageStart
+  )
+    throw new Error('Invalid local calendar snapshot.');
+  const ids = new Set();
+  return snapshot.events.map((event) => {
+    if (
+      !event ||
+      typeof event.uid !== 'string' ||
+      !event.uid ||
+      ids.has(event.uid) ||
+      typeof event.allDay !== 'boolean' ||
+      !['title', 'summary', 'description', 'location'].every(
+        (key) => typeof event[key] === 'string',
+      )
+    )
+      throw new Error('Invalid local calendar event.');
+    ids.add(event.uid);
+    const validInstant = (value) =>
+      typeof value === 'string' &&
+      /^\d{4}-\d{2}-\d{2}T.*Z$/.test(value) &&
+      Number.isFinite(Date.parse(value));
+    const valid = event.allDay ? validDay : validInstant;
+    if (!valid(event.start) || !valid(event.end) || Date.parse(event.end) < Date.parse(event.start))
+      throw new Error('Invalid local calendar event dates.');
+    const start = event.allDay ? event.start : new Date(event.start).toISOString();
+    const end = event.allDay ? event.end : new Date(event.end).toISOString();
+    const startLocal = event.allDay ? { date: start, time: '' } : localParts(start, timeZone);
+    const endLocal = event.allDay ? { date: end, time: '' } : localParts(end, timeZone);
+    return {
+      uid: event.uid,
+      start,
+      end,
+      allDay: event.allDay,
+      title: event.title || 'Untitled event',
+      summary: event.summary,
+      description: event.description,
+      location: event.location,
+      date: startLocal.date,
+      startTime: startLocal.time,
+      endDate: endLocal.date,
+      endTime: endLocal.time,
+      calendarKind: 'generic',
+      room: event.location,
+      roomConflict: false,
+      kind: 'session',
+      cancelled: false,
+    };
+  });
+}
+
 // Source IDs stay local and never contain the subscription URL or its credentials.
 export function parseCalendars(subscriptions, timeZone = 'Europe/Stockholm', options = {}) {
   const ids = new Set();
@@ -399,12 +468,22 @@ export function parseCalendars(subscriptions, timeZone = 'Europe/Stockholm', opt
   for (const source of subscriptions) {
     if (!source.id || ids.has(source.id)) throw new Error('Missing or duplicate subscription ID.');
     ids.add(source.id);
-    if (source.enabled === false || !source.ics) continue;
-    const parsed = parseCalendar(source.ics, timeZone, source.kind || 'auto', options);
+    if (source.provider && !['ics', 'eventkit'].includes(source.provider))
+      throw new Error('Unknown calendar provider.');
+    if (source.enabled === false) continue;
+    const native = source.provider === 'eventkit';
+    if (!native && !source.ics) continue;
+    const parsed = native
+      ? {
+          name: source.name || 'Calendar',
+          events: snapshotEvents(source, timeZone),
+          cancelledUids: [],
+        }
+      : parseCalendar(source.ics, timeZone, source.kind || 'auto', options);
     if (source.legacyIds) name = parsed.name;
     const liveUids = new Set(parsed.events.map((event) => event.uid));
     const sourceEvents = new Map(
-      historyEvents(source, timeZone)
+      (native ? [] : historyEvents(source, timeZone))
         .filter(
           (event) =>
             !parsed.cancelledUids.includes(event.uid) &&
