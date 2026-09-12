@@ -3,7 +3,7 @@
 # Wapacal
 
 
-Turn your calendar into a Mac desktop wallpaper. Wapacal combines ICS calendar subscriptions, including TimeEdit and Moodle feeds, into a month view or a custom date range.
+Turn your calendar into a Mac desktop wallpaper. Wapacal combines calendars on your Mac and ICS subscriptions, including TimeEdit and Moodle feeds, into a month view or a custom date range.
 
 - Choose which events appear and adjust the layout.
 - Export PNGs or a HEIC wallpaper that switches between light and dark with macOS.
@@ -23,7 +23,7 @@ Wapacal is an early macOS app. Download the ZIP from the release's **Assets** se
 1. Unzip the download and drag **Wapacal.app** into **Applications**.
 2. Open Wapacal. It is **not notarized by Apple**, so macOS may block the first launch.
 3. If blocked, open **System Settings → Privacy & Security**, choose **Open Anyway**, and confirm. Only do this if you trust the download. See [Apple's instructions](https://support.apple.com/en-ie/102445).
-4. Add your ICS subscription URL in **Settings → Calendars**.
+4. In **Settings → Calendars**, choose **Calendars on this Mac…** or add an ICS subscription URL.
 
 The download includes no personal calendars or settings. Node.js and Xcode are not needed to run it.
 
@@ -43,13 +43,24 @@ npm run build:native
 open output/Wapacal.app
 ```
 
-The default build includes no private calendars or settings. On first launch, add an ICS subscription URL in **Settings → Calendars**. Existing installations keep their saved settings.
+The default build includes no private calendars or settings. On first launch, choose calendars on your Mac or add an ICS subscription URL in **Settings → Calendars**. Existing installations keep their saved settings. <br>
+When installing an updated version, the calendar permissions may need to be reapplied.
+
+## Connect calendars
+
+In **Settings → Calendars**, click **Calendars on this Mac…**, allow calendar access, and check the calendars you want to use. Nothing is selected automatically. Apple asks for full calendar access because EventKit has no read-only permission; Wapacal only reads events and never changes your calendars. If you deny access, Wapacal can open **System Settings → Privacy & Security → Calendars** so you can enable it later.
+
+Calendars synced to the Mac appear here, including Google accounts added in Apple Calendar. macOS handles account login and cloud synchronization. To connect a Google account, follow [Google's Apple Calendar setup instructions](https://support.google.com/calendar/answer/99358?co=GENIE.Platform%3DDesktop&hl=en). Alternatively, add Google's [secret iCal address](https://support.google.com/calendar/answer/37648?hl=en) as a subscription. Keep that URL private. Direct Google login inside Wapacal is not implemented.
+
+Uncheck a calendar in the picker or turn off **Enable calendar** to hide all of its events. In the editor's **Choose events** tab, uncheck individual events. Disabling and re-enabling a calendar preserves those event choices. Avoid connecting the same calendar through both macOS and an ICS URL, which would show two copies.
+
+While running, Wapacal refreshes local calendars after macOS reports changes, on wake/activation, and with a periodic fallback. Changing the displayed date range also loads local events for that range. Preview changes reach your desktop when you choose **Apply wallpaper**, or automatically if that option is enabled. Successful refreshes remove deleted local events. Temporary failures retain the previous snapshot; removing a source or losing permission clears its cached events. An already applied wallpaper remains until you apply another one or restore the previous wallpaper.
 
 ## Make your wallpaper
 
 Choose **Month** or **Module** in the sidebar. A module is a named date range, such as a course block. Enable **Include Saturdays and Sundays** when you want a seven-day calendar. Use **Choose events** to hide individual events and **Appearance** to adjust the image size, theme, and layout.
 
-In **Settings → Calendars**, choose an **Event color** for each subscription. Changes save and update the preview immediately. Preset colors adjust for light and dark appearance; **Custom** opens the color picker to choose an exact color for both. The wallpaper footer lists included calendars in their colors. Click **Apply wallpaper** to update your desktop, or enable automatic updates. Choose **Default** to use the standard theme colors.
+In **Settings → Calendars**, choose an **Event color** for each calendar. Changes save and update the preview immediately. Preset colors adjust for light and dark appearance; **Custom** opens the color picker to choose an exact color for both. The wallpaper footer lists included calendars in their colors. Click **Apply wallpaper** to update your desktop, or enable automatic updates. Choose **Default** to use the standard theme colors.
 
 Click **Apply wallpaper** to use it on the selected display, or **Export** to save an image. Settings also offers automatic updates and launch at login. Closing the window keeps Wapacal running in the menu bar; choose **Quit** there to stop it.
 
@@ -61,14 +72,15 @@ From the menu bar, you can reopen Wapacal, change settings, refresh and apply th
   <img src="assets/screenshots/wapacal-editor-and-menubar.jpg" alt="Wapacal editor showing a calendar preview with the menu bar menu open" width="500">
 </p>
 
-Your settings and cached calendars stay on your Mac under `~/Library/Application Support/Wapacal/`. Existing data migrates automatically from the previous `com.samuelkremer.wapacal` folder. Wallpaper files still in use by macOS remain at their original paths.
+Your settings and cached calendars stay on your Mac under `~/Library/Application Support/Wapacal/`. Existing data migrates automatically from earlier Application Support folders. Wallpaper files still in use by macOS remain at their original paths. Wapacal does not need general access to your Documents folder.
 
 ## Current limits
 
 - Feeds support UTC times, all-day dates, named time zones, and floating times interpreted in the wallpaper's time zone. Repeating events, added/excluded dates, and individually moved or cancelled occurrences are supported. Identical duplicate records are ignored.
 - Conflicting records with the same event and occurrence ID, unknown time zones without a `VTIMEZONE` definition, `RANGE=THISANDFUTURE` exceptions, and `RDATE` periods still cause the feed to be rejected. Recurrence expansion covers the selected view and nearby years, with limits of 20,000 events and 50,000 recurrence steps per feed.
 - Applying and restoring wallpapers has been tested with a built-in Retina screen and a 4K external display. Physical disconnect/reconnect, inactive Spaces, and older macOS versions still need live testing. The all-display option targets connected screens; it does not control macOS's “Show on all Spaces” setting. Restoring Apple's dynamic or aerial wallpaper settings is not guaranteed.
-- Wapacal currently requires a direct ICS subscription URL. It does not connect directly to Apple Calendar or Google Calendar accounts.
+- Calendar and event identifiers can change when accounts are removed or fully resynced. Wapacal reports missing calendars instead of guessing a replacement by name. Reselect the calendar in Settings and remove the unavailable entry; event choices may need to be made again. Local snapshots are limited to 100,000 events per calendar in the requested range.
+- EventKit permission and calendar discovery have been tested manually on current macOS. macOS 13 and provider-specific recurrence behavior still need live testing. Automated tests use a fake provider and do not read personal calendars.
 
 ## Development
 

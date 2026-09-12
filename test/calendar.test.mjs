@@ -531,3 +531,75 @@ test('wallpaper legend names only included calendars and reserves footer space',
   const excluded = renderWallpaper(events, { ...options, excludedEventIds: [events[1].uid] });
   assert.doesNotMatch(excluded.svg, /Source 1/);
 });
+
+test('native snapshots combine with ICS and preserve all-day dates across time zones', () => {
+  const snapshot = {
+    version: 1,
+    coverageStart: '2026-01-01',
+    coverageEnd: '2027-01-01',
+    events: [
+      {
+        uid: 'holiday',
+        start: '2026-10-30',
+        end: '2026-11-03',
+        allDay: true,
+        title: 'Holiday',
+        summary: 'Holiday',
+        description: '',
+        location: '',
+      },
+      {
+        uid: 'meeting',
+        start: '2026-10-26T08:00:00Z',
+        end: '2026-10-26T09:00:00Z',
+        allDay: false,
+        title: 'Meeting',
+        summary: 'Meeting',
+        description: '',
+        location: 'Office',
+      },
+    ],
+  };
+  const local = { id: 'local', provider: 'eventkit', name: 'Personal', snapshot };
+  const subscriptions = [
+    local,
+    {
+      id: 'feed',
+      ics: ics('DTSTART:20261026T080000Z\r\nDTEND:20261026T090000Z\r\nSUMMARY:Lecture'),
+    },
+  ];
+  const { events } = parseCalendars(subscriptions, 'Europe/Stockholm');
+  assert.equal(events.length, 3);
+  const holiday = events.find((e) => e.originalUid === 'holiday');
+  assert.equal(holiday.date, '2026-10-30');
+  assert.equal(holiday.endDate, '2026-11-03');
+  assert.equal(events.find((e) => e.originalUid === 'meeting').startTime, '09:00');
+  assert.equal(
+    parseCalendars([local], 'America/Los_Angeles').events.find((e) => e.originalUid === 'holiday')
+      .date,
+    holiday.date,
+  );
+  assert.equal(parseCalendars([{ ...local, enabled: false }, subscriptions[1]]).events.length, 1);
+  const replaced = reconcileSubscriptions(
+    [local],
+    [{ ...local, snapshot: { ...snapshot, events: [] } }],
+    '2026-12-01T00:00:00Z',
+  );
+  assert.equal(
+    parseCalendars(replaced).events.length,
+    0,
+    'deleted past events must not become retained history',
+  );
+  for (const event of [
+    { ...snapshot.events[0], start: '2026-02-30' },
+    { ...snapshot.events[0], end: '2026-01-01' },
+    { ...snapshot.events[0], allDay: 'yes' },
+  ]) {
+    assert.throws(() => parseCalendars([{ ...local, snapshot: { ...snapshot, events: [event] } }]));
+  }
+  assert.throws(() =>
+    parseCalendars([
+      { ...local, snapshot: { ...snapshot, events: [snapshot.events[0], snapshot.events[0]] } },
+    ]),
+  );
+});

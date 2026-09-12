@@ -55,6 +55,12 @@ final class StatusLabel: NSTextField {
     lazy var wallpaperSettingsButton = NSButton(
         title: "Open Wallpaper Settings…", target: self,
         action: #selector(openWallpaperSettings))
+    var localCalendars: LocalCalendarProviding = EventKitCalendarProvider()
+    var localCalendarObserver: NSObjectProtocol?
+    var localCalendarTimer: Timer?
+    var localRefreshPending = false
+    var localApplyPending = false
+    var waitingForCalendarAccess = false
     let engine = CalendarEngine()
     let editorView = EditorViewController()
     var appearanceObservation: NSKeyValueObservation?
@@ -70,6 +76,7 @@ final class StatusLabel: NSTextField {
     let status = StatusLabel(wrappingLabelWithString: "Loading your calendar…")
     let urlField = NSTextField()
     let sourcePicker = NSPopUpButton()
+    var lastSelectedSourceID: String?
     let sourceName = NSTextField()
     let sourceColor = NSPopUpButton()
     var customSourceColor = NSColor.systemBlue
@@ -139,6 +146,8 @@ final class StatusLabel: NSTextField {
                 saved.removeValue(forKey: key)
             }
         }
+        clearInaccessibleLocalSnapshots()
+        observeLocalCalendars()
         appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.new]) {
             [weak self] _, _ in
             Task { @MainActor [weak self] in
@@ -382,6 +391,7 @@ final class StatusLabel: NSTextField {
                 persist()
                 status.stringValue = "Saved calendar loaded. Your edits are saved automatically."
                 tick()
+                localCalendarsChanged()
             } catch { reportEditorError(error) }
         }
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
@@ -412,8 +422,12 @@ final class StatusLabel: NSTextField {
                 if patch["mode"] as? String == "module", patch["proposed"] as? Bool == false {
                     self.editorView.closeDetails()
                 }
+                let localRangeChanged =
+                    ["mode", "month", "start", "end"].contains { patch[$0] != nil }
+                    && self.subscriptions.contains { $0["provider"] as? String == "eventkit" }
+                if localRangeChanged { self.beginRefresh(force: true, localOnly: true) }
                 self.scheduleEditorSave(
-                    automaticApply: automaticApply
+                    automaticApply: automaticApply && !localRangeChanged
                         && selectionGeneration == self.displaySelectionGeneration)
             } catch { self.reportEditorError(error) }
         }
@@ -427,7 +441,11 @@ final class StatusLabel: NSTextField {
     }
     func applicationDidBecomeActive(_ notification: Notification) {
         refreshWallpaperSharingWarning()
-        if ready { updateDisplayResolution() }
+        if ready {
+            updateDisplayResolution()
+            if resumeLocalCalendarAccessIfNeeded() { return }
+            localCalendarsChanged()
+        }
     }
     @objc func openWallpaperSettings() {
         NSWorkspace.shared.open(
@@ -604,7 +622,7 @@ final class StatusLabel: NSTextField {
     }
     func buildSettingsWindow() {
         settingsWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 570),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 680),
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         settingsWindow.title = "Wapacal Settings"
         settingsWindow.center()
@@ -663,7 +681,7 @@ final class StatusLabel: NSTextField {
         let sourceRow = EditorViewController.stack(
             [
                 sourcePicker,
-                NSButton(title: "New calendar", target: self, action: #selector(addSource)),
+                NSButton(title: "New subscription", target: self, action: #selector(addSource)),
                 NSButton(title: "Remove", target: self, action: #selector(removeSource)),
             ], vertical: false)
         sourcePicker.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -674,7 +692,12 @@ final class StatusLabel: NSTextField {
         tab(
             "calendars", "Calendars",
             [
-                note("Connect calendar subscriptions to keep your timetable up to date."),
+                note(
+                    "Choose calendars, then use the event checklist in the editor to choose what appears on your wallpaper."
+                ),
+                NSButton(
+                    title: "Calendars on this Mac…", target: self,
+                    action: #selector(chooseLocalCalendars)),
                 sourceRow, field("Calendar name", sourceName), field("Subscription URL", urlField),
                 field("Event color", sourceColor),
                 sourceEnabled, saveRow,
@@ -1003,26 +1026,98 @@ final class StatusLabel: NSTextField {
         }
     }
     var subscriptions: [[String: Any]] { saved["subscriptions"] as? [[String: Any]] ?? [] }
+    var selectedSourceIndex: Int? {
+        guard let id = sourcePicker.selectedItem?.representedObject as? String else { return nil }
+        return subscriptions.firstIndex { $0["id"] as? String == id }
+    }
+    private func sourceMenuIcon(local: Bool) -> NSImage? {
+        let description = local ? "Calendar on this Mac" : "Calendar subscription"
+        let image = NSImage(
+            systemSymbolName: local ? "calendar" : "link", accessibilityDescription: description
+        )?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+        image?.isTemplate = true
+        return image
+    }
     func reloadSources(selected: String? = nil) {
+        let currentID = sourcePicker.selectedItem?.representedObject as? String
         sourcePicker.removeAllItems()
-        for source in subscriptions {
-            let item = NSMenuItem(
-                title: source["name"] as? String ?? "Calendar", action: nil, keyEquivalent: "")
-            item.representedObject = source["id"]
-            sourcePicker.menu?.addItem(item)
+        let groups = [
+            ("CALENDARS ON THIS MAC", true),
+            ("SUBSCRIPTIONS", false),
+        ]
+        for (title, local) in groups {
+            let sources = subscriptions.filter {
+                ($0["provider"] as? String == "eventkit") == local
+            }
+            guard !sources.isEmpty else { continue }
+            if !(sourcePicker.menu?.items.isEmpty ?? true) {
+                sourcePicker.menu?.addItem(.separator())
+            }
+            let header: NSMenuItem
+            if #available(macOS 14.0, *) {
+                header = .sectionHeader(title: title)
+            } else {
+                header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                header.isEnabled = false
+                header.attributedTitle = NSAttributedString(
+                    string: title,
+                    attributes: [
+                        .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+                        .foregroundColor: NSColor.secondaryLabelColor,
+                    ])
+            }
+            sourcePicker.menu?.addItem(header)
+            for source in sources {
+                let name = source["name"] as? String ?? "Calendar"
+                let item = NSMenuItem(title: name, action: nil, keyEquivalent: "")
+                item.representedObject = source["id"]
+                item.image = sourceMenuIcon(local: local)
+                item.setAccessibilityLabel(
+                    "\(name), \(local ? "calendar on this Mac" : "subscription")")
+                sourcePicker.menu?.addItem(item)
+            }
         }
-        if let selected,
-            let index = subscriptions.firstIndex(where: { $0["id"] as? String == selected })
-        {
-            sourcePicker.selectItem(at: index)
+        let availableIDs = Set(subscriptions.compactMap { $0["id"] as? String })
+        let preferredID =
+            [selected, currentID, lastSelectedSourceID].compactMap { $0 }.first {
+                availableIDs.contains($0)
+            } ?? subscriptions.first?["id"] as? String
+        if let item = sourcePicker.itemArray.first(where: {
+            $0.representedObject as? String == preferredID
+        }) {
+            sourcePicker.select(item)
+        } else {
+            sourcePicker.select(nil)
         }
         selectSource()
     }
     @objc func selectSource() {
         NSColorPanel.shared.orderOut(nil)
-        let index = sourcePicker.indexOfSelectedItem
-        let source = subscriptions.indices.contains(index) ? subscriptions[index] : [:]
-        urlField.stringValue = source["url"] as? String ?? ""
+        if selectedSourceIndex == nil {
+            let availableIDs = Set(subscriptions.compactMap { $0["id"] as? String })
+            let fallbackID =
+                lastSelectedSourceID.flatMap {
+                    availableIDs.contains($0) ? $0 : nil
+                } ?? subscriptions.first?["id"] as? String
+            if let item = sourcePicker.itemArray.first(where: {
+                $0.representedObject as? String == fallbackID
+            }) {
+                sourcePicker.select(item)
+            }
+        }
+        guard let index = selectedSourceIndex else {
+            lastSelectedSourceID = nil
+            configureSourceFields([:])
+            return
+        }
+        let source = subscriptions[index]
+        lastSelectedSourceID = source["id"] as? String
+        configureSourceFields(source)
+    }
+    private func configureSourceFields(_ source: [String: Any]) {
+        let local = source["provider"] as? String == "eventkit"
+        urlField.isEnabled = !local
+        urlField.stringValue = local ? "Managed by macOS Calendar" : source["url"] as? String ?? ""
         sourceName.stringValue = source["name"] as? String ?? ""
         let color = source["color"] as? String ?? "default"
         if color.hasPrefix("#"), color.count == 7, let rgb = UInt32(color.dropFirst(), radix: 16) {
@@ -1049,8 +1144,7 @@ final class StatusLabel: NSTextField {
     }
     @objc func addSource() {
         NSColorPanel.shared.orderOut(nil)
-        let index = sourcePicker.indexOfSelectedItem
-        if subscriptions.indices.contains(index) {
+        if let index = selectedSourceIndex {
             let source = subscriptions[index]
             // Keep a new URL typed before starting the new-calendar entry.
             if urlField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == source["url"]
@@ -1061,6 +1155,8 @@ final class StatusLabel: NSTextField {
             if sourceName.stringValue == source["name"] as? String { sourceName.stringValue = "" }
             sourcePicker.select(nil)
         }
+        urlField.isEnabled = true
+        if urlField.stringValue == "Managed by macOS Calendar" { urlField.stringValue = "" }
         sourceColor.selectItem(at: 0)
         sourceEnabled.state = .on
         sourceEnabled.isEnabled = false
@@ -1128,8 +1224,7 @@ final class StatusLabel: NSTextField {
         changeSourceColor()
     }
     @objc func changeSourceColor() {
-        let index = sourcePicker.indexOfSelectedItem
-        guard subscriptions.indices.contains(index) else { return }
+        guard let index = selectedSourceIndex else { return }
         guard ready, !fetching else {
             selectSource()
             status.stringValue = "Wait for the current refresh to finish."
@@ -1154,13 +1249,13 @@ final class StatusLabel: NSTextField {
                     "Could not change calendar color. \(error.localizedDescription)"
             }
             fetching = false
+            finishLocalRefresh()
             pendingEdits -= 1
             if automatic.state == .on { await makeAndApply(force: false) }
         }
     }
     @objc func toggleSourceEnabled() {
-        let index = sourcePicker.indexOfSelectedItem
-        guard subscriptions.indices.contains(index) else { return }
+        guard let index = selectedSourceIndex else { return }
         guard ready, !fetching else {
             sourceEnabled.state = subscriptions[index]["enabled"] as? Bool == false ? .off : .on
             status.stringValue = "Wait for the current refresh to finish."
@@ -1174,7 +1269,9 @@ final class StatusLabel: NSTextField {
         Task { @MainActor in
             defer {
                 fetching = false
-                sourceEnabled.isEnabled = sourcePicker.indexOfSelectedItem >= 0
+                if enabled { localRefreshPending = true }
+                finishLocalRefresh()
+                sourceEnabled.isEnabled = selectedSourceIndex != nil
             }
             do {
                 _ = try await js(
@@ -1196,13 +1293,15 @@ final class StatusLabel: NSTextField {
             status.stringValue = "Wait for the current refresh to finish."
             return
         }
-        let index = sourcePicker.indexOfSelectedItem
-        guard subscriptions.indices.contains(index) else { return }
+        guard let index = selectedSourceIndex else { return }
         var sources = subscriptions
         sources.remove(at: index)
         fetching = true
         Task { @MainActor in
-            defer { fetching = false }
+            defer {
+                fetching = false
+                finishLocalRefresh()
+            }
             do {
                 guard
                     let reconciled = try await js(
@@ -1225,6 +1324,12 @@ final class StatusLabel: NSTextField {
         }
     }
     @objc func saveSource() {
+        if let selected = selectedSourceIndex,
+            subscriptions[selected]["provider"] as? String == "eventkit"
+        {
+            saveLocalSource(at: selected)
+            return
+        }
         let value = urlField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: value), url.scheme == "https", let host = url.host else {
             status.stringValue = "Enter an HTTPS calendar subscription URL."
@@ -1235,7 +1340,7 @@ final class StatusLabel: NSTextField {
                 "Wait for the current refresh to finish before changing subscriptions."
             return
         }
-        let index = sourcePicker.indexOfSelectedItem
+        let index = selectedSourceIndex
         var sources = subscriptions
         guard
             !sources.enumerated().contains(where: {
@@ -1245,8 +1350,8 @@ final class StatusLabel: NSTextField {
             status.stringValue = "That calendar is already subscribed."
             return
         }
-        let adding = !sources.indices.contains(index)
-        var source: [String: Any] = adding ? ["id": UUID().uuidString] : sources[index]
+        let adding = index == nil
+        var source: [String: Any] = adding ? ["id": UUID().uuidString] : sources[index!]
         if source["url"] as? String != value {
             for key in ["ics", "fetchedAt", "checkedAt", "etag", "modified", "history"] {
                 source.removeValue(forKey: key)
@@ -1258,7 +1363,7 @@ final class StatusLabel: NSTextField {
         source["color"] = selectedSourceColor
         source["kind"] =
             host == "timeedit.net" || host.hasSuffix(".timeedit.net") ? "timeedit" : "generic"
-        if adding { sources.append(source) } else { sources[index] = source }
+        if adding { sources.append(source) } else { sources[index!] = source }
         saved["subscriptions"] = sources
         saved["nextCheck"] = 0.0
         if adding {
@@ -1316,8 +1421,22 @@ final class StatusLabel: NSTextField {
     }
     @objc func refreshNow() { beginRefresh(force: true) }
     @objc func refreshAndApplyNow() { beginRefresh(force: true, applyAfterRefresh: true) }
-    func beginRefresh(force: Bool, applyAfterRefresh: Bool = false) {
-        guard ready, !fetching else { return }
+    func beginRefresh(force: Bool, applyAfterRefresh: Bool = false, localOnly: Bool = false) {
+        guard ready else { return }
+        if fetching {
+            if localOnly { localRefreshPending = true }
+            if applyAfterRefresh
+                && subscriptions.contains(where: { $0["provider"] as? String == "eventkit" })
+            {
+                localRefreshPending = true
+                localApplyPending = true
+            }
+            return
+        }
+        if localOnly && !subscriptions.contains(where: { $0["provider"] as? String == "eventkit" })
+        {
+            return
+        }
         guard force || nextCheck <= Date() else { return }
         guard !subscriptions.isEmpty else {
             status.stringValue = "Add a calendar subscription to refresh."
@@ -1328,12 +1447,78 @@ final class StatusLabel: NSTextField {
         status.stringValue = "Checking calendars…"
         let generation = dataGeneration
         Task { @MainActor in
-            defer { if generation == dataGeneration { fetching = false } }
+            defer {
+                if generation == dataGeneration {
+                    fetching = false
+                    finishLocalRefresh()
+                }
+            }
+            clearInaccessibleLocalSnapshots()
             var sources = subscriptions
             var failures: [String] = []
+            let range: [String: String]
+            do {
+                guard
+                    let result = try await js("return window.nativeCalendarWindow()")
+                        as? [String: String]
+                else {
+                    throw WallpaperError.invalid("Could not determine the calendar date range.")
+                }
+                range = result
+                if sources.contains(where: { $0["provider"] as? String == "eventkit" })
+                    && !localCalendars.hasAccess
+                {
+                    _ = try await js(
+                        "return window.nativeSources(subscriptions,clearCourse)",
+                        ["subscriptions": sources, "clearCourse": false])
+                    persist()
+                }
+            } catch {
+                status.stringValue = error.localizedDescription
+                return
+            }
             for index in sources.indices {
                 guard generation == dataGeneration else { return }
                 let source = sources[index]
+                let isLocal = source["provider"] as? String == "eventkit"
+                if localOnly && !isLocal { continue }
+                if isLocal {
+                    do {
+                        // Revocation also clears disabled calendars' cached private events.
+                        if !localCalendars.hasAccess { throw LocalCalendarError.accessUnavailable }
+                        if source["enabled"] as? Bool == false { continue }
+                        guard let identifier = source["calendarIdentifier"] as? String,
+                            let from = range["from"], let to = range["to"]
+                        else {
+                            throw WallpaperError.invalid("Invalid saved local calendar.")
+                        }
+                        let snapshot = try await localCalendars.snapshot(
+                            identifier: identifier, from: from, to: to)
+                        guard generation == dataGeneration else { return }
+                        sources[index]["snapshot"] = snapshot
+                        sources[index]["fetchedAt"] = ISO8601DateFormatter().string(from: Date())
+                        sources[index].removeValue(forKey: "error")
+                    } catch {
+                        guard generation == dataGeneration else { return }
+                        if error is LocalCalendarError {
+                            sources[index].removeValue(forKey: "snapshot")
+                        }
+                        sources[index]["error"] = error.localizedDescription
+                        failures.append(
+                            "\(source["name"] as? String ?? "Calendar"): \(error.localizedDescription)"
+                        )
+                    }
+                    do {
+                        _ = try await js(
+                            "return window.nativeSources(subscriptions,clearCourse)",
+                            ["subscriptions": sources, "clearCourse": false])
+                    } catch {
+                        sources[index] = source
+                        failures.append(error.localizedDescription)
+                    }
+                    guard generation == dataGeneration else { return }
+                    continue
+                }
                 if source["enabled"] as? Bool == false { continue }
                 do {
                     guard let value = source["url"] as? String, let url = URL(string: value),
@@ -1391,28 +1576,41 @@ final class StatusLabel: NSTextField {
                         throw WallpaperError.invalid("HTTP \(http.statusCode).")
                     }
                     sources[index]["checkedAt"] = now
+                    sources[index].removeValue(forKey: "error")
                 } catch {
                     guard generation == dataGeneration else { return }
                     let detail =
                         (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String
                         ?? error.localizedDescription
+                    sources[index]["error"] = detail
                     failures.append("\(source["name"] as? String ?? "Calendar"): \(detail)")
                 }
             }
+            guard generation == dataGeneration else { return }
             saved["subscriptions"] = sources
-            saved["nextCheck"] =
-                Date().addingTimeInterval(failures.isEmpty ? refreshInterval : 300)
-                .timeIntervalSince1970
+            if !localOnly {
+                saved["nextCheck"] =
+                    Date().addingTimeInterval(failures.isEmpty ? refreshInterval : 300)
+                    .timeIntervalSince1970
+            }
             persist()
+            let sourceFailures = sources.compactMap { source -> String? in
+                guard let error = source["error"] as? String else { return nil }
+                return "\(source["name"] as? String ?? "Calendar"): \(error)"
+            }
+            failures = Array(Set(failures + sourceFailures)).sorted()
             refreshFailure =
                 failures.isEmpty
                 ? nil
-                : "Refresh failed. \(failures.joined(separator:" ")) Saved events were kept. Retrying in 5 minutes."
+                : "Refresh failed. \(failures.joined(separator:" ")) Unavailable calendars may be empty or show saved events. Check calendar access and try Refresh again."
             status.stringValue =
                 refreshFailure
-                ?? "\(sources.count) calendars checked at \(Date().formatted(date:.omitted,time:.shortened))."
-            if applyAfterRefresh || automatic.state == .on {
-                await makeAndApply(force: applyAfterRefresh)
+                ?? "Calendars checked at \(Date().formatted(date:.omitted,time:.shortened))."
+            localApplyPending = localApplyPending || applyAfterRefresh
+            if !localRefreshPending && (localApplyPending || automatic.state == .on) {
+                let forceApply = localApplyPending
+                localApplyPending = false
+                await makeAndApply(force: forceApply)
             }
         }
     }
@@ -1564,6 +1762,10 @@ final class StatusLabel: NSTextField {
         do {
             saveTimer?.invalidate()
             dataGeneration += 1
+            localCalendarTimer?.invalidate()
+            localRefreshPending = false
+            localApplyPending = false
+            waitingForCalendarAccess = false
             fetching = false
             refreshFailure = nil
             session.invalidateAndCancel()

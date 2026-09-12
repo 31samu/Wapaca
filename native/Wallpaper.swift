@@ -225,17 +225,16 @@ func ensureWorkspaceDirectories() throws {
     }
 }
 
-func legacyWorkspaceDirectory() -> URL {
+func legacyWorkspaceDirectories() -> [URL] {
     if let override = ProcessInfo.processInfo.environment["WAPACAL_LEGACY_WORKSPACE"],
         !override.isEmpty
     {
-        return URL(fileURLWithPath: override, isDirectory: true)
+        return [URL(fileURLWithPath: override, isDirectory: true)]
     }
-    if Bundle.main.bundleURL.pathExtension == "app" {
-        return Bundle.main.bundleURL.deletingLastPathComponent()
-    }
-    return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(
-        "output", isDirectory: true)
+    // Older development builds stored data beside the app. Automatically inspecting that folder
+    // can ask for Documents, Desktop, or Downloads access based only on where the app was launched.
+    // Keep the explicit override for migration tests and one-off developer recovery.
+    return []
 }
 
 private struct MigrationItem {
@@ -256,7 +255,7 @@ func previousApplicationSupportDirectories() -> [URL] {
 func migrateLegacyWorkspace() throws {
     try ensureWorkspaceDirectories()
     let files = FileManager.default
-    let candidates = previousApplicationSupportDirectories() + [legacyWorkspaceDirectory()]
+    let candidates = previousApplicationSupportDirectories() + legacyWorkspaceDirectories()
     for legacy in candidates
     where legacy.standardizedFileURL != workspaceDirectory().standardizedFileURL
         && files.fileExists(atPath: legacy.path)

@@ -4,6 +4,8 @@ import { execFileSync } from 'node:child_process';
 const sources = [
   'native/Wallpaper.swift',
   'native/CalendarEngine.swift',
+  'native/EventKitCalendarProvider.swift',
+  'native/LocalCalendarSettings.swift',
   'native/EditorView.swift',
   'native/Editor.swift',
 ];

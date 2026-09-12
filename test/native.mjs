@@ -219,7 +219,8 @@ assert(files.fileExists(atPath: recoveryDirectory().appendingPathComponent("rest
 assert(files.fileExists(atPath: recoveryDirectory().appendingPathComponent("restore-flat.json").path))
 assert(files.fileExists(atPath: recoveryDirectory().appendingPathComponent("restored-old.json").path))
 assert(files.fileExists(atPath: appliedDirectory().appendingPathComponent("old.heic").path))
-assert(!files.fileExists(atPath: legacyWorkspaceDirectory().appendingPathComponent("state/app-state.json").path))
+let legacy = URL(fileURLWithPath: ProcessInfo.processInfo.environment["WAPACAL_LEGACY_WORKSPACE"]!)
+assert(!files.fileExists(atPath: legacy.appendingPathComponent("state/app-state.json").path))
 try resetInactiveRuntimeData()
 assert(!files.fileExists(atPath: stateDirectory().appendingPathComponent("app-state.json").path))
 assert(files.fileExists(atPath: recoveryDirectory().appendingPathComponent("restore-display.json").path))
@@ -235,4 +236,25 @@ print("Storage migration checks passed")
     env: { ...process.env, WAPACAL_APP_SUPPORT: support, WAPACAL_LEGACY_WORKSPACE: legacy },
   });
   assert.match(output, /checks passed/);
+});
+
+test('production migration does not inspect the folder containing the app', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wapacal-storage-scope-'));
+  const file = join(dir, 'main.swift');
+  await writeFile(
+    file,
+    `import AppKit
+
+assert(legacyWorkspaceDirectories().isEmpty)
+print("Storage migration scope checks passed")
+`,
+  );
+  const executable = join(dir, 'checks');
+  compileNative(file, executable, { stdio: 'pipe' });
+  const environment = { ...process.env };
+  delete environment.WAPACAL_LEGACY_WORKSPACE;
+  assert.match(
+    execFileSync(executable, [], { encoding: 'utf8', env: environment }),
+    /checks passed/,
+  );
 });

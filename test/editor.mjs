@@ -355,3 +355,65 @@ test('changing calendar colors updates wallpaper and survives refresh and reload
   }
   dom.window.close();
 });
+
+test('local calendar selection and individual exclusions survive refresh, moves and reload', async () => {
+  const { dom, w, snapshot } = await setup();
+  const event = {
+    uid: '["series","2026-09-08T08:00:00Z"]',
+    start: '2026-09-08T08:00:00Z',
+    end: '2026-09-08T09:00:00Z',
+    allDay: false,
+    title: 'Local appointment',
+    summary: 'Local appointment',
+    description: 'Private details',
+    location: 'Office',
+  };
+  let source = {
+    id: 'local-calendar',
+    provider: 'eventkit',
+    name: 'Personal',
+    snapshot: {
+      version: 1,
+      coverageStart: '2025-01-01',
+      coverageEnd: '2028-01-01',
+      events: [event],
+    },
+  };
+  w.nativeSources([source], true);
+  w.nativeUpdate({ mode: 'month', month: '2026-09' });
+  const uid = snapshot().events[0].uid;
+  w.nativeInclude(uid, false);
+  assert.equal(snapshot().events[0].included, false);
+  assert.doesNotMatch(snapshot().svg, /Local appointment/);
+  source = {
+    ...source,
+    snapshot: {
+      ...source.snapshot,
+      events: [{ ...event, start: '2026-09-09T08:00:00Z', end: '2026-09-09T09:00:00Z' }],
+    },
+  };
+  w.nativeCalendars([source], '2026-09-09T12:00:00Z');
+  assert.equal(snapshot().events[0].uid, uid);
+  assert.equal(snapshot().events[0].included, false);
+  w.nativeSources([{ ...source, enabled: false }], false);
+  assert.equal(snapshot().events.length, 0);
+  w.nativeSources([source], false);
+  assert.equal(snapshot().events[0].included, false);
+  w.nativeLoad({ subscriptions: [source], editor: snapshot().editor });
+  assert.equal(snapshot().events[0].included, false);
+  w.nativeInclude(uid, true);
+  assert.match(snapshot().svg, /Local appointment/);
+  w.nativeUpdate({ month: '2035-09' });
+  assert.ok(w.nativeCalendarWindow().to > '2035-09-30');
+  const before = snapshot();
+  assert.throws(() =>
+    w.nativeCalendars(
+      [{ ...source, snapshot: { ...source.snapshot, events: [{}] } }],
+      '2026-09-09T12:00:00Z',
+    ),
+  );
+  assert.deepEqual(snapshot(), before);
+  w.nativeSources([{ ...source, snapshot: undefined }], false);
+  assert.equal(snapshot().events.length, 0);
+  dom.window.close();
+});

@@ -116,6 +116,10 @@ window.nativeUpdate = function (patch) {
   const rangeChanged = ['mode', 'month', 'start', 'end'].some((key) => next[key] !== state[key]);
   return commit(rangeChanged ? parseCalendars(calendarSources, next.timeZone, next) : data, next);
 };
+window.nativeCalendarWindow = function () {
+  const range = recurrenceWindow(state, state.timeZone);
+  return { from: dayAdd(range.from, -8), to: dayAdd(range.to, 8) };
+};
 window.nativeInclude = function (uid, included) {
   if (
     typeof uid !== 'string' ||
